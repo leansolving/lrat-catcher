@@ -1,0 +1,13 @@
+name = "LRATLean"
+defaultTargets = ["LRATLean"]
+
+[[lean_lib]]
+name = "LRATLean"
+
+[[lean_exe]]
+name = "lratlean-export"
+root = "Export"
+
+[[lean_exe]]
+name = "lratlean-gen"
+root = "Gen"
