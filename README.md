@@ -154,6 +154,12 @@ same encodings, whose certificates are far too large to ship here.
 - `examples/gen_php.py` and `examples/gen_static_cubes.py` generate the
   pigeonhole instances and the 2^k cube splits used by the examples.
 
+## Related projects
+
+- [PBLean](https://github.com/leansolving/pblean): verified pseudo-Boolean proof
+  checking in Lean 4, the pseudo-Boolean counterpart to this clausal (CNF/LRAT)
+  tool.
+
 ## Issues and contributions
 
 Bug reports and questions are welcome on the
