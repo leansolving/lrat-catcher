@@ -1,1 +1,13 @@
 .lake/
+.DS_Store
+
+# LaTeX build byproducts
+PAPER/*.aux
+PAPER/*.log
+PAPER/*.out
+PAPER/*.pdf
+PAPER/*.bbl
+PAPER/*.blg
+PAPER/*.synctex.gz
+PAPER/*.fls
+PAPER/*.fdb_latexmk

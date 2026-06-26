@@ -6,7 +6,8 @@ import LRATLean.Reflect
   clauses) has an LRAT refutation of ~63 MB, which `lrat_decide` produces
   with the build-time solver and imports through the compiled core checker
   in one command. Mathlib's `lrat_proof` (explicit proof terms) is
-  impractical at this certificate size; see the paper's evaluation.
+  impractical at this certificate size: building explicit proof terms exhausts
+  memory well before this point.
 -/
 
 namespace LRATLean.Tests

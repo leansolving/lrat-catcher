@@ -19,6 +19,14 @@ import LRATLean.Showcases.Ramsey
 
 open Std.Sat
 
+/-- Write a file, exiting cleanly if the path is not writable. -/
+def writeOutput (path content : String) : IO Unit := do
+  try
+    IO.FS.writeFile path content
+  catch e =>
+    IO.eprintln s!"lratlean-gen: cannot write '{path}': {e}"
+    IO.Process.exit 1
+
 def usage : String :=
   "usage: lratlean-gen schur k n out.cnf | lratlean-gen ramsey n s t out.cnf"
 
@@ -34,7 +42,7 @@ def main (args : List String) : IO UInt32 := do
       unless LRATLean.dimacsRoundTrip cnf do
         IO.eprintln "lratlean-gen: round-trip self-check failed"
         return 1
-      IO.FS.writeFile outFile cnf.dimacs
+      writeOutput outFile cnf.dimacs
       IO.println s!"lratlean-gen: wrote encodeK {k} {n} to {outFile}"
       return 0
     | _, _ =>
@@ -47,7 +55,7 @@ def main (args : List String) : IO UInt32 := do
       unless LRATLean.dimacsRoundTrip cnf do
         IO.eprintln "lratlean-gen: round-trip self-check failed"
         return 1
-      IO.FS.writeFile outFile cnf.dimacs
+      writeOutput outFile cnf.dimacs
       IO.println s!"lratlean-gen: wrote Ramsey encode {n} {s} {t} to {outFile}"
       return 0
     | _, _, _ =>
