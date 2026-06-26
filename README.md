@@ -1,5 +1,8 @@
 # LRATLean
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![Lean 4](https://img.shields.io/badge/Lean-v4.30.0-blue.svg)](https://lean-lang.org/)
+
 Import SAT solver certificates into Lean 4 as theorems, by reflection.
 
 LRATLean is a standalone Lean 4 tool. It takes a DIMACS CNF formula together
