@@ -31,7 +31,8 @@ There is no Mathlib dependency.
 Generate certificates with `cadical --lrat --no-binary --no-factor`. The
 `--no-factor` flag is required for CaDiCaL 3 and later: factoring introduces
 extension variables that the core checker soundly rejects. Set `LRATCATCHER_SOLVER`
-to use a different solver binary.
+to use a different solver binary; give an absolute path to pin one, since under
+`lake` a toolchain-bundled `cadical` can shadow the system one on `PATH`.
 
 ## Build
 
@@ -54,7 +55,9 @@ solves PHP(10,9) and takes ~10 s); the others replay shipped certificates.
 
 ## Usage
 
-Two commands import a certificate as a theorem:
+Two commands import a certificate as a theorem. Put the command in a module
+under `LRATCatcher/` and build it by name; `LRATCatcher/Tests/ReflectTest.lean`
+is a ready-to-copy example.
 
 ```lean
 import LRATCatcher.Reflect
@@ -107,7 +110,7 @@ module that composes them with the proved cover combinator — no extra
 
 ```sh
 lake exe lratcatch-cover-parallel base.cnf cubes.icnf outdir/leaf cover.lrat Name [chunkSize]
-bash LRATCatcher/Generated/Name/build.sh        # builds in parallel; retries transient failures
+bash LRATCatcher/Generated/Name/build.sh   # from the package root; builds in parallel, retries failures
 ```
 
 This writes `LRATCatcher/Generated/Name/{Base,Chunk*,Cover,Main,build.sh}`. `Main`
@@ -182,9 +185,10 @@ same encodings, whose certificates are far too large to ship here.
 - `lake exe lratcatch-cover-parallel base.cnf cubes.icnf leafPrefix cover.lrat Name [chunkSize]`
   emits a parallel-buildable module set for a cube-and-conquer run (see
   [Parallel cube-and-conquer](#parallel-cube-and-conquer)).
-- `lake exe lratcatch-gen schur k n out.cnf` (and
-  `lake exe lratcatch-gen ramsey n s t out.cnf`) generate showcase formulas
-  from the same encodings the commands certify against.
+- `lake exe lratcatch-gen schur k n out.cnf` (`k` colors on `{1..n}`) and
+  `lake exe lratcatch-gen ramsey n s t out.cnf` (`n` vertices, forbidden cliques
+  `K_s`/`K_t`) generate showcase formulas from the same encodings the commands
+  certify against.
 - `examples/gen_php.py` and `examples/gen_static_cubes.py` generate the
   pigeonhole instances and the 2^k cube splits used by the examples.
 
