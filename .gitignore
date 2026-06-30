@@ -6,8 +6,15 @@ PAPER/*.aux
 PAPER/*.log
 PAPER/*.out
 PAPER/*.pdf
+# keep the figure asset (regenerate with PAPER/fig_cliff.py)
+!PAPER/fig_cliff.pdf
 PAPER/*.bbl
 PAPER/*.blg
 PAPER/*.synctex.gz
 PAPER/*.fls
 PAPER/*.fdb_latexmk
+PAPER/auto/
+# parked D2 figure renders (regenerate from the .d2 sources with d2)
+PAPER/figsrc/*.png
+PAPER/figsrc/*.svg
+PAPER/figsrc/*.pdf

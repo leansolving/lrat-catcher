@@ -1,4 +1,4 @@
-import LRATLean.Reflect
+import LRATCatcher.Reflect
 
 /-!
   # Verified Ramsey encoding
@@ -19,7 +19,7 @@ import LRATLean.Reflect
   variables, so the encoding soundness proof uses the coloring directly as
   the CNF valuation.
 
-  The DIMACS file for the solver is produced by `lratlean-gen ramsey n s t
+  The DIMACS file for the solver is produced by `lratcatch-gen ramsey n s t
   out` from the *same* `encode` function, so the certified CNF and the solved
   CNF coincide by construction.
 -/
@@ -27,7 +27,7 @@ import LRATLean.Reflect
 open Lean Elab Command
 open Std.Sat
 
-namespace LRATLean.Ramsey
+namespace LRATCatcher.Ramsey
 
 /-! ## Edge variables, subsets, and encoding -/
 
@@ -298,17 +298,17 @@ def ramseyNumber (s t n : Nat) : Prop :=
 /-- `ramsey_lrat name n s t "proof.lrat"`: registers
     `name : ¬ hasRamseyFreeColoring n s t` (the upper bound `R(s,t) ≤ n`)
     from an LRAT refutation of `encode n s t` (DIMACS file via
-    `lratlean-gen ramsey n s t out.cnf`). -/
+    `lratcatch-gen ramsey n s t out.cnf`). -/
 elab "ramsey_lrat " nm:ident ppSpace nTerm:num ppSpace sTerm:num
     ppSpace tTerm:num ppSpace lratFile:str : command => do
-  let lratStr ← LRATLean.readFile' lratFile.getString
+  let lratStr ← LRATCatcher.readFile' lratFile.getString
   if let .error e := Std.Tactic.BVDecide.LRAT.parseLRATProof lratStr.toUTF8 then
     throwError "ramsey_lrat: LRAT parse error in '{lratFile.getString}': {e}"
   let lratLit := Syntax.mkStrLit lratStr
   elabCommand (← `(command|
-    theorem $nm : ¬ LRATLean.Ramsey.hasRamseyFreeColoring $nTerm $sTerm $tTerm :=
-      LRATLean.Ramsey.no_ramsey_free_of_unsat $nTerm $sTerm $tTerm
-        (LRATLean.checkLratCnf_sound (LRATLean.Ramsey.encode $nTerm $sTerm $tTerm)
+    theorem $nm : ¬ LRATCatcher.Ramsey.hasRamseyFreeColoring $nTerm $sTerm $tTerm :=
+      LRATCatcher.Ramsey.no_ramsey_free_of_unsat $nTerm $sTerm $tTerm
+        (LRATCatcher.checkLratCnf_sound (LRATCatcher.Ramsey.encode $nTerm $sTerm $tTerm)
           $lratLit (by native_decide))))
 
-end LRATLean.Ramsey
+end LRATCatcher.Ramsey

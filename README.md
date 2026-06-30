@@ -1,17 +1,17 @@
-# LRATLean
+# lrat-catcher
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Lean 4](https://img.shields.io/badge/Lean-v4.30.0-blue.svg)](https://lean-lang.org/)
 
 Import SAT solver certificates into Lean 4 as theorems, by reflection.
 
-LRATLean is a standalone Lean 4 tool. It takes a DIMACS CNF formula together
+lrat-catcher is a standalone Lean 4 tool. It takes a DIMACS CNF formula together
 with an LRAT unsatisfiability certificate from a SAT solver and produces a Lean
 theorem stating that the formula is unsatisfiable. The certificate is checked
 by the formally verified LRAT checker in Lean's standard library, run as
 compiled native code via `native_decide`. This scales to certificates where
 explicit proof-term reconstruction (such as Mathlib's `lrat_proof`) runs out of
-memory. LRATLean supports the full RAT rule and composes cube-and-conquer
+memory. lrat-catcher supports the full RAT rule and composes cube-and-conquer
 solver runs into a single unsatisfiability theorem.
 
 There is no Mathlib dependency.
@@ -30,22 +30,22 @@ There is no Mathlib dependency.
 
 Generate certificates with `cadical --lrat --no-binary --no-factor`. The
 `--no-factor` flag is required for CaDiCaL 3 and later: factoring introduces
-extension variables that the core checker soundly rejects. Set `LRATLEAN_SOLVER`
+extension variables that the core checker soundly rejects. Set `LRATCATCHER_SOLVER`
 to use a different solver binary.
 
 ## Build
 
 ```sh
 lake build                                # the library
-lake build LRATLean.Tests.ReflectTest     # one worked example
+lake build LRATCatcher.Tests.ReflectTest     # one worked example
 ```
 
 `lake build` builds the library only. The worked examples are the modules in
-`LRATLean/Tests/`, each built by name; to build them all:
+`LRATCatcher/Tests/`, each built by name; to build them all:
 
 ```sh
 for t in ReflectTest CoverTest KernelTest DecideTest LeafBench SchurTest RamseyTest; do
-  lake build LRATLean.Tests.$t
+  lake build LRATCatcher.Tests.$t
 done
 ```
 
@@ -57,11 +57,11 @@ solves PHP(10,9) and takes ~10 s); the others replay shipped certificates.
 Two commands import a certificate as a theorem:
 
 ```lean
-import LRATLean.Reflect
+import LRATCatcher.Reflect
 
 -- From files. Registers `tiny_cmd : (parseDimacs «...»).Unsat`;
 -- the DIMACS string and the auditable parser are part of the statement.
-lrat_reflect tiny_cmd "LRATLean/Tests/tiny.cnf" "LRATLean/Tests/tiny.lrat"
+lrat_reflect tiny_cmd "LRATCatcher/Tests/tiny.cnf" "LRATCatcher/Tests/tiny.lrat"
 
 -- From a Lean-defined CNF (the verified-encoding form): no parser in the
 -- statement. Here `myCnf` is the formula the certificate refutes.
@@ -70,7 +70,7 @@ def myCnf : Std.Sat.CNF Nat :=
                  [(0, true), (1, false)], [(0, false), (1, false)]] }
 
 -- Registers `tiny_def_cmd : myCnf.Unsat`.
-lrat_reflect_cnf tiny_def_cmd (myCnf) "LRATLean/Tests/tiny.lrat"
+lrat_reflect_cnf tiny_def_cmd (myCnf) "LRATCatcher/Tests/tiny.lrat"
 ```
 
 Each command registers an ordinary Lean theorem, so the result is usable as a
@@ -83,17 +83,48 @@ example : myCnf.Unsat := tiny_def_cmd
 The Schur and Ramsey showcases compose such an `Unsat` theorem with a verified
 encoding to prove a statement about the original combinatorial problem.
 
-Further commands, with worked examples under `LRATLean/Tests/`:
+Further commands, with worked examples under `LRATCatcher/Tests/`:
 
 - `lrat_decide name "f.cnf"` runs the solver at build time, then imports the
   resulting certificate (`DecideTest.lean`).
 - `lrat_cover_reflect` and `lrat_cover_reflect_cnf` combine per-cube
   refutations with a cover certificate into a single `Unsat` theorem, the
-  cube-and-conquer path (`CoverTest.lean`).
+  cube-and-conquer path (`CoverTest.lean`). For runs with many cubes, build the
+  per-cube refutations in parallel with `lratcatch-cover-parallel` (see
+  [Parallel cube-and-conquer](#parallel-cube-and-conquer)).
 
 Every command has a `+kernel` variant, for example
 `lrat_decide +kernel name "f.cnf"` (see Trust base). Certificate paths are
 relative to the directory where `lake` runs, which is the package root.
+
+## Parallel cube-and-conquer
+
+`lrat_cover_reflect` refutes every leaf in one `native_decide`, which runs the
+leaves sequentially. For runs with many cubes, `lratcatch-cover-parallel` instead
+emits one independent Lean module per cube (or per chunk of cubes) plus a final
+module that composes them with the proved cover combinator — no extra
+`native_decide` — so the per-cube refutations build concurrently under `lake`:
+
+```sh
+lake exe lratcatch-cover-parallel base.cnf cubes.icnf outdir/leaf cover.lrat Name [chunkSize]
+bash LRATCatcher/Generated/Name/build.sh        # builds in parallel; retries transient failures
+```
+
+This writes `LRATCatcher/Generated/Name/{Base,Chunk*,Cover,Main,build.sh}`. `Main`
+proves `(parseDimacs «base»).Unsat` — the same trusted statement as
+`lrat_cover_reflect` — with one `native_decide` axiom per chunk plus one for the
+cover. Leaf certificate `i` is read from `{leafPrefix}{i}.lrat` in the cube order
+of the iCNF file; produce the cubes with any cube-and-conquer cuber and the
+per-leaf and cover certificates with your solver (cubing itself is outside
+lrat-catcher's scope).
+
+`chunkSize` defaults to `1` (one cube per module), which maximizes parallelism
+and is the recommended default; larger values trade parallelism for fewer, larger
+modules. `build.sh` retries on failure — because `lake` is incremental, a retry
+rebuilds only the modules that failed, so a transient single-module failure does
+not sink the whole build. The one hard limit is per-leaf: a single leaf
+certificate must fit in memory under `native_decide`; if a cube is too coarse for
+that, split it further (re-cube).
 
 ## Trust base
 
@@ -114,26 +145,26 @@ contents.
 
 ## Integrating into a Lake project
 
-Add LRATLean as a dependency in your `lakefile.toml`:
+Add lrat-catcher as a dependency in your `lakefile.toml`:
 
 ```toml
 [[require]]
-name = "LRATLean"
-git = "https://github.com/leansolving/LRATLean"
+name = "LRATCatcher"
+git = "https://github.com/leansolving/lrat-catcher"
 rev = "main"   # or a release tag
 ```
 
 The equivalent in a Lean `lakefile.lean`:
 
 ```lean
-require LRATLean from git "https://github.com/leansolving/LRATLean" @ "main"
+require LRATCatcher from git "https://github.com/leansolving/lrat-catcher" @ "main"
 ```
 
 ## Showcases
 
-`LRATLean/Showcases/` has verified CNF encodings that connect SAT results back
+`LRATCatcher/Showcases/` has verified CNF encodings that connect SAT results back
 to combinatorial questions, each with an `#print axioms`-checked theorem.
-`LRATLean/Tests/SchurTest.lean` and `RamseyTest.lean` build them end to end:
+`LRATCatcher/Tests/SchurTest.lean` and `RamseyTest.lean` build them end to end:
 
 - **Schur numbers.** `S(3) = 13`, via `schur_lrat` plus a witness coloring.
 - **Ramsey numbers.** `R(3,3) = 6`, via `ramsey_lrat` and a cube-and-conquer
@@ -146,10 +177,13 @@ same encodings, whose certificates are far too large to ship here.
 
 ## Tools
 
-- `lake exe lratlean-export base.cnf cubes.icnf outdir` splits a base formula
+- `lake exe lratcatch-export base.cnf cubes.icnf outdir` splits a base formula
   and cube file into per-leaf CNFs plus a negated-cubes CNF.
-- `lake exe lratlean-gen schur k n out.cnf` (and
-  `lake exe lratlean-gen ramsey n s t out.cnf`) generate showcase formulas
+- `lake exe lratcatch-cover-parallel base.cnf cubes.icnf leafPrefix cover.lrat Name [chunkSize]`
+  emits a parallel-buildable module set for a cube-and-conquer run (see
+  [Parallel cube-and-conquer](#parallel-cube-and-conquer)).
+- `lake exe lratcatch-gen schur k n out.cnf` (and
+  `lake exe lratcatch-gen ramsey n s t out.cnf`) generate showcase formulas
   from the same encodings the commands certify against.
 - `examples/gen_php.py` and `examples/gen_static_cubes.py` generate the
   pigeonhole instances and the 2^k cube splits used by the examples.
@@ -163,7 +197,7 @@ same encodings, whose certificates are far too large to ship here.
 ## Issues and contributions
 
 Bug reports and questions are welcome on the
-[issue tracker](https://github.com/leansolving/LRATLean/issues), and
+[issue tracker](https://github.com/leansolving/lrat-catcher/issues), and
 contributions via pull request.
 
 ## License

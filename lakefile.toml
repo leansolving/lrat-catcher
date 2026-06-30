@@ -1,13 +1,17 @@
-name = "LRATLean"
-defaultTargets = ["LRATLean"]
+name = "LRATCatcher"
+defaultTargets = ["LRATCatcher"]
 
 [[lean_lib]]
-name = "LRATLean"
+name = "LRATCatcher"
 
 [[lean_exe]]
-name = "lratlean-export"
+name = "lratcatch-export"
 root = "Export"
 
 [[lean_exe]]
-name = "lratlean-gen"
+name = "lratcatch-gen"
 root = "Gen"
+
+[[lean_exe]]
+name = "lratcatch-cover-parallel"
+root = "CoverParallel"

@@ -1,4 +1,4 @@
-import LRATLean.Reflect
+import LRATCatcher.Reflect
 
 /-!
   Tests for kernel-mode reflection (`+kernel` variants of the commands).
@@ -7,10 +7,10 @@ import LRATLean.Reflect
   no per-theorem `native_decide` axiom, i.e. no compiler trust.
 -/
 
-namespace LRATLean.Tests
+namespace LRATCatcher.Tests
 
 -- File form: statement is about the embedded CNF literal.
-lrat_reflect +kernel tiny_kernel "LRATLean/Tests/tiny.cnf" "LRATLean/Tests/tiny.lrat"
+lrat_reflect +kernel tiny_kernel "LRATCatcher/Tests/tiny.cnf" "LRATCatcher/Tests/tiny.lrat"
 
 #print axioms tiny_kernel
 
@@ -19,7 +19,7 @@ def tinyDefK : Std.Sat.CNF Nat :=
   { clauses := #[[(0, true), (1, true)], [(0, false), (1, true)],
                  [(0, true), (1, false)], [(0, false), (1, false)]] }
 
-lrat_reflect_cnf +kernel tiny_def_kernel (tinyDefK) "LRATLean/Tests/tiny.lrat"
+lrat_reflect_cnf +kernel tiny_def_kernel (tinyDefK) "LRATCatcher/Tests/tiny.lrat"
 
 #print axioms tiny_def_kernel
 
@@ -28,4 +28,4 @@ lrat_reflect +kernel php43_leaf1_kernel "examples/php43/leaf1.cnf" "examples/php
 
 #print axioms php43_leaf1_kernel
 
-end LRATLean.Tests
+end LRATCatcher.Tests

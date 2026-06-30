@@ -1,19 +1,19 @@
-import LRATLean.Showcases.Schur
+import LRATCatcher.Showcases.Schur
 
 /-!
   End-to-end Schur showcase: S(3) = 13, both bounds as statements about
   colorings (no CNF in the statements).
 
-  * Upper bound: `lratlean-gen schur 3 14 examples/schur/schur_3_14.cnf`,
+  * Upper bound: `lratcatch-gen schur 3 14 examples/schur/schur_3_14.cnf`,
     refuted by `cadical --lrat --no-binary --no-factor`, imported by
     `schur_lrat` → `¬ hasKSchurFreeColoring 3 14`.
   * Lower bound: explicit witness partition {1,4,10,13} | {2,3,11,12} |
     {5,…,9}, checked by `native_decide`.
 -/
 
-namespace LRATLean.Tests
+namespace LRATCatcher.Tests
 
-open LRATLean.Schur
+open LRATCatcher.Schur
 
 -- Upper bound: no Schur-free 3-coloring of {1,…,14}.
 schur_lrat schur3_upper 3 14 "examples/schur/schur_3_14.lrat"
@@ -35,7 +35,7 @@ theorem S3 : schurNumber 3 13 := ⟨schur3_lower, schur3_upper⟩
 #print axioms S3
 
 -- S(4) lower-bound witness coloring of {1,…,44} (found by cadical on the
--- SAT instance `lratlean-gen schur 4 44`, re-verified by `native_decide`;
+-- SAT instance `lratcatch-gen schur 4 44`, re-verified by `native_decide`;
 -- the matching upper bound ¬hasKSchurFreeColoring 4 45, giving S(4)=44, comes
 -- from a cube-and-conquer refutation of `encodeK 4 45` that is too large to ship
 -- here).
@@ -50,4 +50,4 @@ theorem schur4_lower : hasKSchurFreeColoring 4 44 :=
 
 #print axioms schur4_lower
 
-end LRATLean.Tests
+end LRATCatcher.Tests

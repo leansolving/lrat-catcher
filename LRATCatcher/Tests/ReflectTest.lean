@@ -1,13 +1,13 @@
-import LRATLean.Reflect
+import LRATCatcher.Reflect
 
 /-!
   Tests for the `lrat_reflect` / `lrat_reflect_cnf` commands on the tiny instance.
 -/
 
-namespace LRATLean.Tests
+namespace LRATCatcher.Tests
 
 -- Standalone DIMACS + LRAT import.
-lrat_reflect tiny_cmd "LRATLean/Tests/tiny.cnf" "LRATLean/Tests/tiny.lrat"
+lrat_reflect tiny_cmd "LRATCatcher/Tests/tiny.cnf" "LRATCatcher/Tests/tiny.lrat"
 
 #print axioms tiny_cmd
 
@@ -16,8 +16,8 @@ def tinyDef : Std.Sat.CNF Nat :=
   { clauses := #[[(0, true), (1, true)], [(0, false), (1, true)],
                  [(0, true), (1, false)], [(0, false), (1, false)]] }
 
-lrat_reflect_cnf tiny_def_cmd (tinyDef) "LRATLean/Tests/tiny.lrat"
+lrat_reflect_cnf tiny_def_cmd (tinyDef) "LRATCatcher/Tests/tiny.lrat"
 
 #print axioms tiny_def_cmd
 
-end LRATLean.Tests
+end LRATCatcher.Tests

@@ -1,7 +1,7 @@
 import Std.Sat.CNF
 
 /-!
-  # LRATLean.Basic — DIMACS parsing into `Std.Sat.CNF Nat`
+  # LRATCatcher.Basic — DIMACS parsing into `Std.Sat.CNF Nat`
 
   The parser is deliberately small and auditable: it is part of the *statement*
   of every imported theorem (the theorem speaks about `parseDimacs (include_str …)`),
@@ -18,7 +18,7 @@ import Std.Sat.CNF
   This leniency can never make a theorem unsound — the statement is about
   whatever was parsed — but it can make it differ from the file the user thinks
   they fed the solver. The elaboration commands therefore run `validateDimacs`
-  (see `LRATLean.Reflect`), which rejects files where the leniency would matter.
+  (see `LRATCatcher.Reflect`), which rejects files where the leniency would matter.
 
   Literal convention: DIMACS literal `l ≠ 0` ↦ variable `|l| - 1` (0-indexed),
   polarity `true` iff `l > 0`. This is inverse to `Std.Sat.CNF.dimacs`' `+1` shift.
@@ -26,7 +26,7 @@ import Std.Sat.CNF
 
 open Std.Sat
 
-namespace LRATLean
+namespace LRATCatcher
 
 /-- DIMACS literal → Std literal: variable `|l| - 1` (0-indexed), polarity `l > 0`.
     Precondition `l ≠ 0` (callers treat `0` as a clause terminator first;
@@ -64,4 +64,4 @@ def parseDimacs (s : String) : CNF Nat := Id.run do
 def dimacsRoundTrip (cnf : CNF Nat) : Bool :=
   (parseDimacs cnf.dimacs).clauses == cnf.clauses
 
-end LRATLean
+end LRATCatcher

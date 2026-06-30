@@ -1,9 +1,9 @@
-import LRATLean.Cover
+import LRATCatcher.Cover
 
 /-!
-  # `lratlean-export` — generate solver input files for a cube-and-conquer run
+  # `lratcatch-export` — generate solver input files for a cube-and-conquer run
 
-  Usage: `lratlean-export base.cnf cubes.icnf outdir`
+  Usage: `lratcatch-export base.cnf cubes.icnf outdir`
 
   Writes `outdir/leaf{i}.cnf` for each cube of the iCNF file (cube unit
   clauses first, then base — the clause order `lrat_cover_reflect` assumes
@@ -11,7 +11,7 @@ import LRATLean.Cover
   CNF, to be refuted by the solver, producing `cover.lrat`).
 
   Files are printed with `Std.Sat.CNF.dimacs`, whose +1 variable shift inverts
-  `LRATLean.parseDimacs`, so the Lean-side CNFs match the files byte-for-byte
+  `LRATCatcher.parseDimacs`, so the Lean-side CNFs match the files byte-for-byte
   in clause structure.
 -/
 
@@ -23,7 +23,7 @@ def readInput (path : String) : IO String := do
   try
     IO.FS.readFile path
   catch e =>
-    IO.eprintln s!"lratlean-export: cannot read '{path}': {e}"
+    IO.eprintln s!"lratcatch-export: cannot read '{path}': {e}"
     IO.Process.exit 1
 
 /-- Write a file, exiting cleanly if the path is not writable. -/
@@ -31,7 +31,7 @@ def writeOutput (path content : String) : IO Unit := do
   try
     IO.FS.writeFile path content
   catch e =>
-    IO.eprintln s!"lratlean-export: cannot write '{path}': {e}"
+    IO.eprintln s!"lratcatch-export: cannot write '{path}': {e}"
     IO.Process.exit 1
 
 def main (args : List String) : IO UInt32 := do
@@ -39,27 +39,27 @@ def main (args : List String) : IO UInt32 := do
   | [baseFile, icnfFile, outDir] =>
     let baseStr ← readInput baseFile
     let icnfStr ← readInput icnfFile
-    let base := LRATLean.parseDimacs baseStr
-    let cubes := LRATLean.parseICnf icnfStr
+    let base := LRATCatcher.parseDimacs baseStr
+    let cubes := LRATCatcher.parseICnf icnfStr
     if cubes.isEmpty then
-      IO.eprintln "lratlean-export: no cubes found in iCNF file"
+      IO.eprintln "lratcatch-export: no cubes found in iCNF file"
       return 1
     IO.FS.createDirAll outDir
     let mut i := 1
     for c in cubes do
-      let leaf := LRATLean.Cube.leafCNF c base
-      unless LRATLean.dimacsRoundTrip leaf do
-        IO.eprintln s!"lratlean-export: round-trip self-check failed for leaf {i}"
+      let leaf := LRATCatcher.Cube.leafCNF c base
+      unless LRATCatcher.dimacsRoundTrip leaf do
+        IO.eprintln s!"lratcatch-export: round-trip self-check failed for leaf {i}"
         return 1
       writeOutput s!"{outDir}/leaf{i}.cnf" leaf.dimacs
       i := i + 1
-    let negcubes := LRATLean.negCubesCNF cubes
-    unless LRATLean.dimacsRoundTrip negcubes do
-      IO.eprintln "lratlean-export: round-trip self-check failed for negcubes.cnf"
+    let negcubes := LRATCatcher.negCubesCNF cubes
+    unless LRATCatcher.dimacsRoundTrip negcubes do
+      IO.eprintln "lratcatch-export: round-trip self-check failed for negcubes.cnf"
       return 1
     writeOutput s!"{outDir}/negcubes.cnf" negcubes.dimacs
-    IO.println s!"lratlean-export: wrote {cubes.length} leaf CNFs and negcubes.cnf to {outDir}"
+    IO.println s!"lratcatch-export: wrote {cubes.length} leaf CNFs and negcubes.cnf to {outDir}"
     return 0
   | _ =>
-    IO.eprintln "usage: lratlean-export base.cnf cubes.icnf outdir"
+    IO.eprintln "usage: lratcatch-export base.cnf cubes.icnf outdir"
     return 1

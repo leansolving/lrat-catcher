@@ -1,7 +1,7 @@
-import LRATLean.Reflect
+import LRATCatcher.Reflect
 
 /-!
-  # LRATLean.Cover — cube-and-conquer composition, certified entirely inside Lean
+  # LRATCatcher.Cover — cube-and-conquer composition, certified entirely inside Lean
 
   A cube-and-conquer run splits a base CNF into leaves (cube ∪ base), refutes
   each leaf separately, and needs the cube set to *cover* all assignments.
@@ -24,7 +24,7 @@ import LRATLean.Reflect
 open Lean Elab Command
 open Std.Sat Std.Tactic.BVDecide.LRAT
 
-namespace LRATLean
+namespace LRATCatcher
 
 /-! ## Cubes -/
 
@@ -191,7 +191,7 @@ def validateICnf (path : String) (s : String) : CommandElabM Unit := do
     certify a cube-and-conquer run. Leaf certificates are read from
     `{prefix}{i}.lrat` (1-based cube index, cube order of the iCNF file);
     `cover.lrat` refutes the negated-cubes CNF (export it with the
-    `lratlean-export` tool). Registers `name : (parseDimacs «base»).Unsat`. -/
+    `lratcatch-export` tool). Registers `name : (parseDimacs «base»).Unsat`. -/
 elab "lrat_cover_reflect " n:ident ppSpace baseFile:str ppSpace icnfFile:str
     ppSpace leafPrefix:str ppSpace coverFile:str : command => do
   let baseStr ← readFile' baseFile.getString
@@ -217,15 +217,15 @@ elab "lrat_cover_reflect " n:ident ppSpace baseFile:str ppSpace icnfFile:str
   logInfo m!"lrat_cover_reflect: {cubes.length} cubes"
   elabCommand (← `(command|
     set_option maxHeartbeats 0 in
-    theorem $n : (LRATLean.parseDimacs $baseLit).Unsat :=
-      LRATLean.checkCover_sound (LRATLean.parseDimacs $baseLit)
-        (LRATLean.parseICnf $icnfLit) [$leafLits,*] $coverLit (by native_decide)))
+    theorem $n : (LRATCatcher.parseDimacs $baseLit).Unsat :=
+      LRATCatcher.checkCover_sound (LRATCatcher.parseDimacs $baseLit)
+        (LRATCatcher.parseICnf $icnfLit) [$leafLits,*] $coverLit (by native_decide)))
 
 /-- `lrat_cover_reflect_cnf name (cnfTerm) "cubes.icnf" "leafs/prefix"
     "cover.lrat"`: as `lrat_cover_reflect`, but for a Lean-defined `CNF Nat`:
     registers `name : cnfTerm.Unsat`. The solver-side leaf files must come
-    from the DIMACS rendering of the same term (`lratlean-gen` +
-    `lratlean-export`); a mismatch makes the leaf certificates fail the
+    from the DIMACS rendering of the same term (`lratcatch-gen` +
+    `lratcatch-export`); a mismatch makes the leaf certificates fail the
     check, so soundness never depends on the files. -/
 elab "lrat_cover_reflect_cnf " n:ident ppSpace "(" cnfTerm:term ")"
     ppSpace icnfFile:str ppSpace leafPrefix:str ppSpace coverFile:str : command => do
@@ -250,7 +250,7 @@ elab "lrat_cover_reflect_cnf " n:ident ppSpace "(" cnfTerm:term ")"
   elabCommand (← `(command|
     set_option maxHeartbeats 0 in
     theorem $n : Std.Sat.CNF.Unsat ($cnfTerm : Std.Sat.CNF Nat) :=
-      LRATLean.checkCover_sound $cnfTerm
-        (LRATLean.parseICnf $icnfLit) [$leafLits,*] $coverLit (by native_decide)))
+      LRATCatcher.checkCover_sound $cnfTerm
+        (LRATCatcher.parseICnf $icnfLit) [$leafLits,*] $coverLit (by native_decide)))
 
-end LRATLean
+end LRATCatcher

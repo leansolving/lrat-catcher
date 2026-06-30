@@ -1,4 +1,4 @@
-import LRATLean.Reflect
+import LRATCatcher.Reflect
 
 /-!
   # Verified Schur encoding
@@ -21,7 +21,7 @@ import LRATLean.Reflect
   coloring by picking the least asserted color, and a Schur-free coloring
   satisfies the encoding, which is the direction soundness needs.
 
-  The DIMACS file for the solver is produced by `lratlean-gen schur k n out`
+  The DIMACS file for the solver is produced by `lratcatch-gen schur k n out`
   from the *same* `encodeK` function, so the certified CNF and the solved CNF
   coincide by construction.
 -/
@@ -29,7 +29,7 @@ import LRATLean.Reflect
 open Lean Elab Command
 open Std.Sat
 
-namespace LRATLean.Schur
+namespace LRATCatcher.Schur
 
 /-! ## Triples and encoding -/
 
@@ -204,19 +204,19 @@ def schurNumber (k n : Nat) : Prop :=
 
 /-- `schur_lrat name k n "proof.lrat"`: registers
     `name : ¬ hasKSchurFreeColoring k n` from an LRAT refutation of
-    `encodeK k n` (DIMACS file via `lratlean-gen schur k n out.cnf`). -/
+    `encodeK k n` (DIMACS file via `lratcatch-gen schur k n out.cnf`). -/
 elab "schur_lrat " nm:ident ppSpace kTerm:num ppSpace nTerm:num
     ppSpace lratFile:str : command => do
   if kTerm.getNat == 0 then
     throwError "schur_lrat: k must be positive"
-  let lratStr ← LRATLean.readFile' lratFile.getString
+  let lratStr ← LRATCatcher.readFile' lratFile.getString
   if let .error e := Std.Tactic.BVDecide.LRAT.parseLRATProof lratStr.toUTF8 then
     throwError "schur_lrat: LRAT parse error in '{lratFile.getString}': {e}"
   let lratLit := Syntax.mkStrLit lratStr
   elabCommand (← `(command|
-    theorem $nm : ¬ LRATLean.Schur.hasKSchurFreeColoring $kTerm $nTerm :=
-      LRATLean.Schur.no_k_schur_free_of_unsat $kTerm $nTerm (by omega)
-        (LRATLean.checkLratCnf_sound (LRATLean.Schur.encodeK $kTerm $nTerm)
+    theorem $nm : ¬ LRATCatcher.Schur.hasKSchurFreeColoring $kTerm $nTerm :=
+      LRATCatcher.Schur.no_k_schur_free_of_unsat $kTerm $nTerm (by omega)
+        (LRATCatcher.checkLratCnf_sound (LRATCatcher.Schur.encodeK $kTerm $nTerm)
           $lratLit (by native_decide))))
 
-end LRATLean.Schur
+end LRATCatcher.Schur

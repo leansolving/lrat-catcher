@@ -1,4 +1,4 @@
-import LRATLean.Reflect
+import LRATCatcher.Reflect
 
 /-!
   Scale test: PHP(10,9) — the pigeonhole principle for 10 pigeons and 9
@@ -10,10 +10,10 @@ import LRATLean.Reflect
   memory well before this point.
 -/
 
-namespace LRATLean.Tests
+namespace LRATCatcher.Tests
 
 lrat_decide php109_unsat "examples/php109.cnf"
 
 #print axioms php109_unsat
 
-end LRATLean.Tests
+end LRATCatcher.Tests

@@ -1,21 +1,21 @@
-import LRATLean.Showcases.Ramsey
-import LRATLean.Cover
+import LRATCatcher.Showcases.Ramsey
+import LRATCatcher.Cover
 
 /-!
   End-to-end Ramsey showcase: R(3,3) = 6, both bounds as statements about
   edge colorings (no CNF in the statements); plus the R(4,4) lower-bound
   witness (Paley graph of order 17).
 
-  * Upper bound: `lratlean-gen ramsey 6 3 3 examples/ramsey/r33_6.cnf`,
+  * Upper bound: `lratcatch-gen ramsey 6 3 3 examples/ramsey/r33_6.cnf`,
     refuted by `cadical --lrat --no-binary --no-factor`, imported by
     `ramsey_lrat` → `¬ hasRamseyFreeColoring 6 3 3`.
   * Lower bounds: explicit witness colorings checked by `native_decide`
     (pentagon C_5 for R(3,3) > 5; Paley(17) for R(4,4) > 17).
 -/
 
-namespace LRATLean.Tests
+namespace LRATCatcher.Tests
 
-open LRATLean.Ramsey
+open LRATCatcher.Ramsey
 
 -- Sanity: `edgeVar` enumerates the upper triangle bijectively (row-major).
 -- Soundness does not need this, but the meaning of the statements does.
@@ -44,7 +44,7 @@ theorem R33 : ramseyNumber 3 3 6 := ⟨r33_lower, r33_upper⟩
 -- Cube-and-conquer rehearsal for the flagship: the same upper bound via a
 -- 2-cube split, with the Lean-defined encoding as the certified base
 -- (lrat_cover_reflect_cnf composed with the encoding soundness theorem).
-lrat_cover_reflect_cnf r33_cnf_unsat_cc (LRATLean.Ramsey.encode 6 3 3)
+lrat_cover_reflect_cnf r33_cnf_unsat_cc (LRATCatcher.Ramsey.encode 6 3 3)
   "examples/ramsey/r33cc/cubes.icnf" "examples/ramsey/r33cc/leaf"
   "examples/ramsey/r33cc/cover.lrat"
 
@@ -66,4 +66,4 @@ theorem r44_lower : hasRamseyFreeColoring 17 4 4 :=
 
 #print axioms r44_lower
 
-end LRATLean.Tests
+end LRATCatcher.Tests

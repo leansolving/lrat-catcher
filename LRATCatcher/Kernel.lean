@@ -1,8 +1,8 @@
-import LRATLean.Basic
+import LRATCatcher.Basic
 import Std.Tactic.BVDecide.LRAT
 
 /-!
-  # LRATLean.Kernel — kernel-mode LRAT checking (zero compiler trust)
+  # LRATCatcher.Kernel — kernel-mode LRAT checking (zero compiler trust)
 
   A variant of the LRAT check whose Boolean evaluation reduces inside the
   Lean *kernel* (`decide +kernel`), so the compiled evaluator (`native_decide`)
@@ -35,7 +35,7 @@ import Std.Tactic.BVDecide.LRAT
 open Std.Sat Std.Tactic.BVDecide.LRAT
 open Std.Tactic.BVDecide.LRAT.Internal
 
-namespace LRATLean
+namespace LRATCatcher
 
 /-! ## Kernel-reducible clause construction -/
 
@@ -289,4 +289,4 @@ theorem checkKernel_sound (cnf : CNF Nat) (proof : List IntAction)
     rw [Clause.limplies_iff_mem]
     exact (DefaultClause.contains_iff c pivot).mp (by simpa using hfil)
 
-end LRATLean
+end LRATCatcher

@@ -1,10 +1,10 @@
-import LRATLean.Basic
-import LRATLean.Kernel
+import LRATCatcher.Basic
+import LRATCatcher.Kernel
 import Std.Tactic.BVDecide.LRAT
 import Lean
 
 /-!
-  # LRATLean.Reflect — reflection-based import of LRAT certificates
+  # LRATCatcher.Reflect — reflection-based import of LRAT certificates
 
   Builds on the formally verified LRAT checker in Lean core
   (`Std.Tactic.BVDecide.LRAT`): `check_sound` converts a successful Boolean
@@ -15,7 +15,7 @@ import Lean
 
   Two entry points:
   * `lrat_reflect name "f.cnf" "f.lrat"` —
-      registers `name : (LRATLean.parseDimacs «f.cnf contents»).Unsat`;
+      registers `name : (LRATCatcher.parseDimacs «f.cnf contents»).Unsat`;
       the DIMACS string and the (auditable) parser are part of the statement.
   * `lrat_reflect_cnf name (cnfTerm) "f.lrat"` —
       registers `name : cnfTerm.Unsat` for a Lean-defined `CNF Nat`;
@@ -37,7 +37,7 @@ import Lean
 open Lean Elab Command
 open Std.Sat Std.Tactic.BVDecide.LRAT
 
-namespace LRATLean
+namespace LRATCatcher
 
 /-! ## Checker wrappers and soundness -/
 
@@ -145,18 +145,18 @@ def emitKernelTheorem (n : Ident) (cnfT : Term) (proof : Array IntAction) :
     set_option maxRecDepth 1000000 in
     set_option maxHeartbeats 0 in
     theorem $n : Std.Sat.CNF.Unsat ($cnfT : Std.Sat.CNF Nat) :=
-      LRATLean.checkKernel_sound $cnfT $actions (by decide +kernel)))
+      LRATCatcher.checkKernel_sound $cnfT $actions (by decide +kernel)))
 
 /-- `lrat_reflect name "f.cnf" "f.lrat"`: import a DIMACS CNF + LRAT certificate
-    as `name : (LRATLean.parseDimacs «cnf contents»).Unsat`. -/
+    as `name : (LRATCatcher.parseDimacs «cnf contents»).Unsat`. -/
 elab "lrat_reflect " n:ident ppSpace cnfFile:str ppSpace lratFile:str : command => do
   let cnfStr ← loadCnf cnfFile
   let (lratStr, _) ← loadLrat "lrat_reflect" lratFile
   let cnfLit := Syntax.mkStrLit cnfStr
   let lratLit := Syntax.mkStrLit lratStr
   elabCommand (← `(command|
-    theorem $n : (LRATLean.parseDimacs $cnfLit).Unsat :=
-      LRATLean.checkLrat_sound $cnfLit $lratLit (by native_decide)))
+    theorem $n : (LRATCatcher.parseDimacs $cnfLit).Unsat :=
+      LRATCatcher.checkLrat_sound $cnfLit $lratLit (by native_decide)))
 
 /-- `lrat_reflect +kernel name "f.cnf" "f.lrat"`: as `lrat_reflect`, but the
     check runs inside the Lean kernel (no compiler trust). The kernel cannot
@@ -177,11 +177,11 @@ elab "lrat_reflect_cnf " n:ident ppSpace "(" cnfTerm:term ")" ppSpace lratFile:s
   let lratLit := Syntax.mkStrLit lratStr
   elabCommand (← `(command|
     theorem $n : Std.Sat.CNF.Unsat ($cnfTerm : Std.Sat.CNF Nat) :=
-      LRATLean.checkLratCnf_sound $cnfTerm $lratLit (by native_decide)))
+      LRATCatcher.checkLratCnf_sound $cnfTerm $lratLit (by native_decide)))
 
 /-- `lrat_reflect_cnf +kernel name (cnfTerm) "f.lrat"`: as `lrat_reflect_cnf`,
     but the Boolean check is evaluated by the Lean kernel (`decide +kernel`
-    on `LRATLean.checkKernel`) instead of the compiled evaluator — slower,
+    on `LRATCatcher.checkKernel`) instead of the compiled evaluator — slower,
     but removes the compiler from the trust base. -/
 elab "lrat_reflect_cnf " "+" noWs &"kernel" ppSpace n:ident ppSpace "(" cnfTerm:term ")" ppSpace lratFile:str : command => do
   let (_, proof) ← loadLrat "lrat_reflect_cnf" lratFile
@@ -191,14 +191,14 @@ elab "lrat_reflect_cnf " "+" noWs &"kernel" ppSpace n:ident ppSpace "(" cnfTerm:
 
 /-- Run the SAT solver on `cnfPath` at elaboration time, writing an LRAT
     certificate to `lratPath`. Expects UNSAT (exit code 20). The solver
-    defaults to `cadical` and can be overridden with the `LRATLEAN_SOLVER`
+    defaults to `cadical` and can be overridden with the `LRATCATCHER_SOLVER`
     environment variable. Flags are `--lrat --no-binary`, plus `--no-factor`
     for cadical ≥ 3 (factoring introduces extension variables whose
     certificates the core checker soundly rejects; older versions do not
     factor and lack the flag). Beware: under `lake`, plain `cadical`
     resolves to the version bundled with the Lean toolchain. -/
 def runSolver (cnfPath lratPath : String) : CommandElabM Unit := do
-  let solver := (← IO.getEnv "LRATLEAN_SOLVER").getD "cadical"
+  let solver := (← IO.getEnv "LRATCATCHER_SOLVER").getD "cadical"
   let verOut ← IO.Process.output { cmd := solver, args := #["--version"] }
   let ver := verOut.stdout.trimAscii.toString
   let mut flags := #["--lrat", "--no-binary"]
@@ -216,7 +216,7 @@ def runSolver (cnfPath lratPath : String) : CommandElabM Unit := do
 
 /-- `lrat_decide name "f.cnf"`: run the SAT solver at elaboration time and
     import the resulting certificate, as `lrat_reflect` does:
-    `name : (LRATLean.parseDimacs «cnf contents»).Unsat`. The certificate is
+    `name : (LRATCatcher.parseDimacs «cnf contents»).Unsat`. The certificate is
     not kept on disk — rebuilds re-run the solver. -/
 elab "lrat_decide " n:ident ppSpace cnfFile:str : command => do
   let cnfStr ← loadCnf cnfFile
@@ -230,8 +230,8 @@ elab "lrat_decide " n:ident ppSpace cnfFile:str : command => do
     let cnfLit := Syntax.mkStrLit cnfStr
     let lratLit := Syntax.mkStrLit lratStr
     elabCommand (← `(command|
-      theorem $n : (LRATLean.parseDimacs $cnfLit).Unsat :=
-        LRATLean.checkLrat_sound $cnfLit $lratLit (by native_decide)))
+      theorem $n : (LRATCatcher.parseDimacs $cnfLit).Unsat :=
+        LRATCatcher.checkLrat_sound $cnfLit $lratLit (by native_decide)))
   finally
     IO.FS.removeDirAll tmpDir
 
@@ -252,4 +252,4 @@ elab "lrat_decide " "+" noWs &"kernel" ppSpace n:ident ppSpace cnfFile:str : com
   finally
     IO.FS.removeDirAll tmpDir
 
-end LRATLean
+end LRATCatcher
