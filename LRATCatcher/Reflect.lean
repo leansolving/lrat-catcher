@@ -26,8 +26,10 @@ import Lean
 
   **Caveat (build staleness):** certificate files are read at elaboration time
   and are *not* tracked as build dependencies by Lake. After changing a `.cnf`
-  or `.lrat` file, touch the importing `.lean` file or rebuild from scratch;
-  otherwise a stale `.olean` keeps the previously embedded contents.
+  or `.lrat` file, make a content change to the importing `.lean` file (e.g.
+  edit a comment), or compile it directly with `lake env lean <file>`;
+  `touch` is not sufficient (Lake caches by content hash, and replays failed
+  builds too), so a stale `.olean` would keep the previously embedded contents.
 
   Solver invocation: certificates with extension variables (e.g. from
   CaDiCaL's bounded variable addition) are soundly *rejected* by the core
