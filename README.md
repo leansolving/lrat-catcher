@@ -129,6 +129,66 @@ not sink the whole build. The one hard limit is per-leaf: a single leaf
 certificate must fit in memory under `native_decide`; if a cube is too coarse for
 that, split it further (re-cube).
 
+For very large runs the certificates need not all be on disk at once: the
+optional `--part` flag emits the shared modules (`--part shared`) and chunk
+ranges (`--part LO:HI`) in separate invocations, so a driver can copy a wave
+of certificates in, embed them, delete them, and build — the transient
+certificate footprint stays bounded by the wave size (all invocations must
+use the same cube file and `chunkSize`).
+
+## Streaming import (large certificates)
+
+A monolithic `native_decide` over a whole certificate needs roughly an order
+of magnitude more memory than the certificate's size. For certificates where
+that is too much, the resumable checker (`LRATCatcher/Stream.lean`) splits
+one certificate into chunks whose intermediate checker states cross module
+boundaries as plain-data snapshots, and composes the per-chunk checks with
+proved lemmas — memory is bounded by the chunk size plus the live clause
+database, independent of certificate size:
+
+```sh
+lake exe lratcatch-stream-gen chunk base.cnf cert.lrat Name chunkLines [--delete-cert]
+bash LRATCatcher/Generated/Name/build.sh
+```
+
+`Main` proves `base.Unsat` for `base := parseDimacs «base.cnf contents»`, with
+one `native_decide` axiom per chunk. The generator streams the certificate
+(one chunk in memory), runs the full check while splitting — an invalid
+certificate fails at generation, not at build time — and with `--delete-cert`
+removes the certificate file afterwards: the emitted modules carry the
+evidence.
+
+**Zero-storage streaming.** The `lrat_stream` command checks a certificate
+that is never stored at all — the solver runs at elaboration time and its
+LRAT output is checked as it streams through a FIFO:
+
+```lean
+lrat_stream php_unsat "examples/php43/base.cnf"
+```
+
+The soundness theorem quantifies over every possible stream, so the added
+trust over native mode is exactly the small audited reader shim
+(`LRATCatcher/StreamOracle.lean`; see its module docstring for the trust
+discussion). The resulting `.olean` carries the theorem but no replayable
+evidence — rebuilding re-runs the solver.
+
+**Certified presolve.** A simplification run of the solver
+(`cadical -P4 -c 0 -d 0 --lrat --no-binary --no-factor F.cnf deriv.lrat`)
+yields an LRAT *derivation* F ⊢ F′ without the empty clause. `derive` mode
+checks it once and externalizes the derived formula:
+
+```sh
+lake exe lratcatch-stream-gen derive base.cnf deriv.lrat Name chunkLines
+```
+
+This emits `fprime.cnf` (the derived formula, original variable names) for
+cubing and solving, plus a proved transfer theorem
+`deriv_transfer : (externSnap snapN).Unsat → base.Unsat`; refute the derived
+formula with the cube-and-conquer machinery (`lrat_cover_reflect_cnf` on the
+`externSnap` term, or `lratcatch-cover-parallel`) and compose. The derivation
+is checked once, not per leaf. `LRATCatcher/Tests/PresolveTest.lean` is a
+complete worked example.
+
 ## Trust base
 
 - **Native mode** (default): the Lean kernel and the compiler. Each imported
@@ -185,9 +245,15 @@ same encodings, whose certificates are far too large to ship here.
 
 - `lake exe lratcatch-export base.cnf cubes.icnf outdir` splits a base formula
   and cube file into per-leaf CNFs plus a negated-cubes CNF.
-- `lake exe lratcatch-cover-parallel base.cnf cubes.icnf leafPrefix cover.lrat Name [chunkSize]`
+- `lake exe lratcatch-cover-parallel base.cnf cubes.icnf leafPrefix cover.lrat Name [chunkSize] [--part …]`
   emits a parallel-buildable module set for a cube-and-conquer run (see
   [Parallel cube-and-conquer](#parallel-cube-and-conquer)).
+- `lake exe lratcatch-stream-gen (chunk|derive) base.cnf cert.lrat Name chunkLines [--delete-cert]`
+  emits a chunked module set for one large certificate, or checks a
+  derivation and externalizes the derived formula (see
+  [Streaming import](#streaming-import-large-certificates)).
+- `scripts/stream_fifo.sh [runs]` exercises the zero-storage FIFO path
+  end-to-end against a live solver.
 - `lake exe lratcatch-gen schur k n out.cnf` (`k` colors on `{1..n}`) and
   `lake exe lratcatch-gen ramsey n s t out.cnf` (`n` vertices, forbidden cliques
   `K_s`/`K_t`) generate showcase formulas from the same encodings the commands

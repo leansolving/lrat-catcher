@@ -15,3 +15,11 @@ root = "Gen"
 [[lean_exe]]
 name = "lratcatch-cover-parallel"
 root = "CoverParallel"
+
+[[lean_exe]]
+name = "lratcatch-cover-stream"
+root = "CoverStream"
+
+[[lean_exe]]
+name = "lratcatch-stream-gen"
+root = "StreamGen"
