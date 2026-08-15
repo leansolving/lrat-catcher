@@ -100,6 +100,31 @@ def cubeLit (c : Cube) : String :=
 def forallMemProof (elems : List String) : String :=
   elems.foldr (fun e acc => s!"List.forall_mem_cons.mpr ⟨{e}, {acc}⟩") "List.forall_mem_nil _"
 
+/-- Maximum number of segments joined in ONE right-nested `++` expression (and
+    in the matching `forall_mem_append` proof chain). Nesting depth is linear
+    in the segment count and the elaborator overflows its stack at a few
+    thousand (observed: 4,882 segments die, 1,348 pass); above this bound the
+    generator emits a two-level grouping (`cubesGrp<t>` defs + per-group
+    lemmas), giving depth ≤ `segGroup` at both levels (supports up to
+    `segGroup²` = 65,536 segments). -/
+def segGroupDefault : Nat := 256
+
+/-- Split a list into consecutive blocks of `g`. -/
+partial def blocksOf {α} (g : Nat) (l : List α) : List (List α) :=
+  if l.length ≤ g then [l]
+  else
+    let (h, t) := l.splitAt g
+    h :: blocksOf g t
+
+/-- Left-nested `List.forall_mem_append.mpr ⟨⟨…⟩, pₙ⟩` chain matching the
+    LEFT-associated `s₁ ++ s₂ ++ …` segment expression (`++` is `infixl`, so
+    `s₁ ++ s₂ ++ s₃` is `(s₁ ++ s₂) ++ s₃` and the top split is
+    ⟨prefix, last⟩). -/
+def appendChain (ps : List String) : String :=
+  match ps with
+  | [] => "List.forall_mem_nil _"
+  | p :: rest => rest.foldl (fun acc q => s!"List.forall_mem_append.mpr ⟨{acc}, {q}⟩") p
+
 /-- Which modules one invocation emits (global numbering: chunks then parents). -/
 inductive Part where
   | all | shared | range (lo hi : Nat)
@@ -144,6 +169,14 @@ def main (args : List String) : IO UInt32 := do
   let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel"
   let relMode := args.contains "--rel"
   let args := args.filter (· != "--rel")
+  let (args, segGroup) ←
+    match args.span (· != "--seg-group") with
+    | (pre, "--seg-group" :: g :: post) =>
+      match g.toNat? with
+      | some n => if n ≥ 2 then pure (pre ++ post, n)
+                  else die "--seg-group must be ≥ 2"
+      | none => die s!"bad --seg-group '{g}'"
+    | _ => pure (args, segGroupDefault)
   let (posArgs, part) ←
     match args.span (· != "--part") with
     | (pos, ["--part", p]) =>
@@ -258,7 +291,14 @@ def main (args : List String) : IO UInt32 := do
     let segExprs := segOrder.toList.map (fun s => match s with
       | .inl j => s!"chunkCubes{j}"
       | .inr i => s!"parentCubes{i}")
-    h.putStr s!"def cubes : List Cube := {String.intercalate " ++ " segExprs}\n\n"
+    if segExprs.length ≤ segGroup then
+      h.putStr s!"def cubes : List Cube := {String.intercalate " ++ " segExprs}\n\n"
+    else
+      let blocks := blocksOf segGroup segExprs
+      for t in [1:blocks.length+1] do
+        h.putStr s!"def cubesGrp{t} : List Cube := {String.intercalate " ++ " blocks[t-1]!}\n"
+      let grpExprs := (List.range blocks.length).map (fun t => s!"cubesGrp{t+1}")
+      h.putStr s!"\ndef cubes : List Cube := {String.intercalate " ++ " grpExprs}\n\n"
     h.putStr s!"end {modPrefix}\n"
     h.flush
 
@@ -338,11 +378,16 @@ def main (args : List String) : IO UInt32 := do
       | .inl j => s!"chunk{j}_ok"
       | .inr i => s!"(List.forall_mem_cons.mpr ⟨parent{i}_unsat, List.forall_mem_nil _⟩)")
     let m := segProofs.length
-    let comp :=
-      if m == 1 then segProofs.head!
+    let comp ←
+      if m ≤ segGroup then
+        pure (appendChain segProofs)
       else
-        let openers := String.join ((segProofs.take (m-1)).map (fun p => s!"List.forall_mem_append.mpr ⟨{p}, "))
-        openers ++ segProofs.getLast! ++ String.join (List.replicate (m-1) "⟩")
+        -- two-level grouping, mirroring the cubesGrp<t> structure in Base
+        let blocks := blocksOf segGroup segProofs
+        for t in [1:blocks.length+1] do
+          hm.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
+          hm.putStr s!"theorem grp{t}_ok : ∀ c ∈ cubesGrp{t}, (Cube.leafCNF c base).Unsat :=\n  {appendChain blocks[t-1]!}\n\n"
+        pure (appendChain ((List.range blocks.length).map (fun t => s!"grp{t+1}_ok")))
     hm.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
     let coverLemma := if relMode then "cover_unsat_rel" else "cover_unsat"
     hm.putStr s!"theorem base_unsat : base.Unsat :=\n  LRATCatcher.{coverLemma}\n    ({comp})\n    coverThm\n\n"
