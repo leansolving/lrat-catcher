@@ -266,39 +266,20 @@ def main (args : List String) : IO UInt32 := do
   catch e => die s!"cannot create directory '{dir}': {e}"
 
   -- ============================ Base.lean ============================
+  -- Deliberately tiny: only the base CNF and the canonical cube list, each a
+  -- single string-literal def. Per-cube defs live in the module that uses
+  -- them (Chunk<j>/Parent<i>): elaborating one `def cube<i> := [...]` costs
+  -- ~15 ms and ~0.6 MB of elaborator RSS, so a Norin/hexagon-class run with
+  -- ~3·10⁵ cubes in ONE module needs hours and ~200 GB (observed: 50K defs =
+  -- 752 s / 32 GB), and every worker would load that olean. `cubes` is
+  -- instead parsed from the embedded iCNF text; Main proves it equal to the
+  -- concatenation of the per-module lists by `native_decide` (`cubes_eq`),
+  -- which doubles as an end-to-end check of the chunk slicing.
   if emitShared then
     let h ← openOut s!"{dir}/Base.lean"
     h.putStr s!"import LRATCatcher.Cover\n\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
     h.putStr s!"def base : CNF Nat := LRATCatcher.parseDimacs \"{escLean baseStr}\"\n\n"
-    -- all top cubes
-    for i in [1:n+1] do
-      h.putStr s!"def cube{i} : Cube := {cubeLit cubes[i-1]!}\n"
-    h.putStr "\n"
-    -- per-chunk cube lists
-    for j in [1:numChunks+1] do
-      let arr := chunks[j-1]!
-      let cs := String.intercalate ", " (arr.toList.map (fun i => s!"cube{i}"))
-      h.putStr s!"def chunkCubes{j} : List Cube := [{cs}]\n"
-    h.putStr "\n"
-    -- per-parent: only the singleton parent-cube list. The subcube defs
-    -- (`sub<i>_<k>`, `subs<i>`) live in Parent<i>.lean — they are used only
-    -- there, and keeping them out of Base keeps Base small at scale (a
-    -- Norin-class run would otherwise put ~2·10⁵ subcube defs here).
-    for i in parents.toList do
-      h.putStr s!"def parentCubes{i} : List Cube := [cube{i}]\n"
-    h.putStr "\n"
-    -- cubes = concatenation of segments in canonical order
-    let segExprs := segOrder.toList.map (fun s => match s with
-      | .inl j => s!"chunkCubes{j}"
-      | .inr i => s!"parentCubes{i}")
-    if segExprs.length ≤ segGroup then
-      h.putStr s!"def cubes : List Cube := {String.intercalate " ++ " segExprs}\n\n"
-    else
-      let blocks := blocksOf segGroup segExprs
-      for t in [1:blocks.length+1] do
-        h.putStr s!"def cubesGrp{t} : List Cube := {String.intercalate " ++ " blocks[t-1]!}\n"
-      let grpExprs := (List.range blocks.length).map (fun t => s!"cubesGrp{t+1}")
-      h.putStr s!"\ndef cubes : List Cube := {String.intercalate " ++ " grpExprs}\n\n"
+    h.putStr s!"def cubes : List Cube := LRATCatcher.parseICnf \"{escLean icnfStr}\"\n\n"
     h.putStr s!"end {modPrefix}\n"
     h.flush
 
@@ -309,6 +290,11 @@ def main (args : List String) : IO UInt32 := do
       let h ← openOut s!"{dir}/Chunk{j}.lean"
       h.putStr s!"import LRATCatcher.Generated.{name}.Base\nimport LRATCatcher.StreamOracle\n\n"
       h.putStr s!"open Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
+      -- this chunk's cube defs (kept out of Base — see the Base.lean comment)
+      for i in arr.toList do
+        h.putStr s!"def cube{i} : Cube := {cubeLit cubes[i-1]!}\n"
+      let cs := String.intercalate ", " (arr.toList.map (fun i => s!"cube{i}"))
+      h.putStr s!"def chunkCubes{j} : List Cube := [{cs}]\n\n"
       for i in arr.toList do
         h.putStr s!"lrat_stream_cnf leaf{i}_unsat (Cube.leafCNF cube{i} base) \"{escLean s!"{streamDir}/leaf{i}"}\"\n"
       h.putStr "\n"
@@ -328,6 +314,9 @@ def main (args : List String) : IO UInt32 := do
       let h ← openOut s!"{dir}/Parent{i}.lean"
       h.putStr s!"import LRATCatcher.Generated.{name}.Base\nimport LRATCatcher.StreamOracle\n\n"
       h.putStr s!"open Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
+      -- this parent's top cube (kept out of Base — see the Base.lean comment)
+      h.putStr s!"def cube{i} : Cube := {cubeLit cubes[i-1]!}\n"
+      h.putStr s!"def parentCubes{i} : List Cube := [cube{i}]\n\n"
       -- subcube defs, local to this module (only Parent<i> uses them)
       for k in [1:m+1] do
         h.putStr s!"def sub{i}_{k} : Cube := {cubeLit subCubes[k-1]!}\n"
@@ -373,24 +362,30 @@ def main (args : List String) : IO UInt32 := do
     for i in parents.toList do
       hm.putStr s!"import LRATCatcher.Generated.{name}.Parent{i}\n"
     hm.putStr s!"\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
-    -- comp : ∀ c ∈ cubes, (leafCNF c base).Unsat, via forall_mem_append over segments
+    -- The canonical `cubes` (Base) is PARSED from the iCNF text; the segment
+    -- lists live in the chunk/parent modules. Reconnect them here: grouped
+    -- append defs (≤ segGroup wide at both levels, against elaborator stack
+    -- overflow), one `native_decide` identity `cubes_eq`, and the
+    -- forall_mem_append composition transported along it.
+    let segExprs := segOrder.toList.map (fun s => match s with
+      | .inl j => s!"chunkCubes{j}"
+      | .inr i => s!"parentCubes{i}")
+    let exprBlocks := blocksOf segGroup segExprs
+    for t in [1:exprBlocks.length+1] do
+      hm.putStr s!"def cubesGrp{t} : List Cube := {String.intercalate " ++ " exprBlocks[t-1]!}\n"
+    let grouped := String.intercalate " ++ " ((List.range exprBlocks.length).map (fun t => s!"cubesGrp{t+1}"))
+    hm.putStr s!"\nset_option maxHeartbeats 0 in\ntheorem cubes_eq : cubes = {grouped} := by native_decide\n\n"
     let segProofs := segOrder.toList.map (fun s => match s with
       | .inl j => s!"chunk{j}_ok"
       | .inr i => s!"(List.forall_mem_cons.mpr ⟨parent{i}_unsat, List.forall_mem_nil _⟩)")
-    let m := segProofs.length
-    let comp ←
-      if m ≤ segGroup then
-        pure (appendChain segProofs)
-      else
-        -- two-level grouping, mirroring the cubesGrp<t> structure in Base
-        let blocks := blocksOf segGroup segProofs
-        for t in [1:blocks.length+1] do
-          hm.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
-          hm.putStr s!"theorem grp{t}_ok : ∀ c ∈ cubesGrp{t}, (Cube.leafCNF c base).Unsat :=\n  {appendChain blocks[t-1]!}\n\n"
-        pure (appendChain ((List.range blocks.length).map (fun t => s!"grp{t+1}_ok")))
+    let proofBlocks := blocksOf segGroup segProofs
+    for t in [1:proofBlocks.length+1] do
+      hm.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
+      hm.putStr s!"theorem grp{t}_ok : ∀ c ∈ cubesGrp{t}, (Cube.leafCNF c base).Unsat :=\n  {appendChain proofBlocks[t-1]!}\n\n"
+    let comp := appendChain ((List.range proofBlocks.length).map (fun t => s!"grp{t+1}_ok"))
     hm.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
     let coverLemma := if relMode then "cover_unsat_rel" else "cover_unsat"
-    hm.putStr s!"theorem base_unsat : base.Unsat :=\n  LRATCatcher.{coverLemma}\n    ({comp})\n    coverThm\n\n"
+    hm.putStr s!"theorem base_unsat : base.Unsat :=\n  LRATCatcher.{coverLemma}\n    (fun c hc => ({comp}) c (cubes_eq ▸ hc))\n    coverThm\n\n"
     hm.putStr s!"#print axioms base_unsat\n\nend {modPrefix}\n"
     hm.flush
 
