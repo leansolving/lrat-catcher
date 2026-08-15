@@ -130,6 +130,44 @@ theorem cover_unsat {base : CNF Nat} {cubes : List Cube}
   have hl := hleaf c hc a
   simpa [Cube.leafCNF, Cube.eval_toCNF, hsat] using hl
 
+/-- Relative cover completeness: if `base ++ negCubesCNF cubes` is UNSAT, the
+    cubes cover every assignment that satisfies the base. Cube-and-conquer
+    splits produced by lookahead tools are often exhaustive only *relative to
+    the base formula* — branches already falsified by the base are pruned, so
+    the negated-cubes CNF alone is satisfiable and the cover certificate
+    refutes `base ∧ ⋀ᵢ ¬Cᵢ`, not `⋀ᵢ ¬Cᵢ`. The base comes first so the LRAT
+    clause ids of a solver run on the concatenated DIMACS file line up. -/
+theorem cover_complete_rel {base : CNF Nat} {cubes : List Cube}
+    (h : (base ++ negCubesCNF cubes).Unsat) :
+    ∀ a, CNF.eval a base = true → ∃ c ∈ cubes, c.sat a = true := by
+  intro a hbase
+  have h' := h a
+  rw [CNF.eval_append, hbase, Bool.true_and] at h'
+  simp only [negCubesCNF, CNF.eval, Array.all_eq_false', List.mem_toArray] at h'
+  obtain ⟨cl, hmem, hfalse⟩ := h'
+  obtain ⟨c, hc, rfl⟩ := List.mem_map.mp hmem
+  exact ⟨c, hc, Cube.sat_of_negClause_false (by simpa using hfalse)⟩
+
+/-- **Cube-and-conquer composition, relative cover**: like `cover_unsat`, but
+    the cover certificate refutes `base ++ negCubesCNF cubes` (cubes exhaustive
+    relative to the base) instead of the unconditional tautology. Strictly more
+    general: a certificate for `negCubesCNF cubes` alone also refutes the
+    concatenation. -/
+theorem cover_unsat_rel {base : CNF Nat} {cubes : List Cube}
+    (hleaf : ∀ c ∈ cubes, (Cube.leafCNF c base).Unsat)
+    (hcover : (base ++ negCubesCNF cubes).Unsat) :
+    base.Unsat := by
+  intro a
+  cases hb : CNF.eval a base with
+  | false => rfl
+  | true =>
+    have hfalse : CNF.eval a base = false := by
+      obtain ⟨c, hc, hsat⟩ := cover_complete_rel hcover a hb
+      have hl := hleaf c hc a
+      simpa [Cube.leafCNF, Cube.eval_toCNF, hsat] using hl
+    rw [hb] at hfalse
+    exact hfalse
+
 /-! ## Boolean checker -/
 
 /-- Check the i-th leaf against the i-th certificate. -/
@@ -166,6 +204,22 @@ theorem checkCover_sound (base : CNF Nat) (cubes : List Cube) (leafCerts : List 
     base.Unsat := by
   rw [checkCover, Bool.and_eq_true] at h
   exact cover_unsat (checkLeaves_sound h.1) (checkLratCnf_sound _ _ h.2)
+
+/-- `checkCover` with a relative cover certificate: the cover LRAT refutes
+    `base ++ negCubesCNF cubes` (solve the concatenated DIMACS, base clauses
+    first). Use when the cube split is exhaustive only relative to the base. -/
+def checkCoverRel (base : CNF Nat) (cubes : List Cube) (leafCerts : List String)
+    (coverCert : String) : Bool :=
+  checkLeaves base cubes leafCerts &&
+    checkLratCnf (base ++ negCubesCNF cubes) coverCert
+
+/-- Soundness of `checkCoverRel`. -/
+theorem checkCoverRel_sound (base : CNF Nat) (cubes : List Cube)
+    (leafCerts : List String) (coverCert : String)
+    (h : checkCoverRel base cubes leafCerts coverCert = true) :
+    base.Unsat := by
+  rw [checkCoverRel, Bool.and_eq_true] at h
+  exact cover_unsat_rel (checkLeaves_sound h.1) (checkLratCnf_sound _ _ h.2)
 
 /-! ## iCNF cube files -/
 
