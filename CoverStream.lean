@@ -46,7 +46,13 @@ a wave, then cleans up. Archive naming: direct leaf `i` → `leaf<i>.lrat.zst`, 
 
 Usage:
   lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt \
-    subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI]
+    subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel]
+
+`--rel`: the top cover certificate refutes `base ++ negCubesCNF cubes` (a cover
+that is exhaustive only *relative to* the base, the shape lookahead cubing tools
+produce); `Cover.lean` then states `(base ++ negCubesCNF cubes).Unsat` and
+`Main.lean` composes with `cover_unsat_rel`. Solve the cover certificate against
+the concatenated DIMACS with the base clauses FIRST, so LRAT clause ids line up.
 
 `recubed.txt`: one `leaf<i>` per line (1-based top-cube index) — the re-cubed cubes.
 `subicnfdir/leaf<i>_d8.icnf`: subcube 'a' lines (δ-only) for parent `i`.
@@ -135,7 +141,9 @@ def readSubCubes (subicnfDir : String) (i : Nat) : IO (Array Cube) := do
   return cs
 
 def main (args : List String) : IO UInt32 := do
-  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1.."
+  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel"
+  let relMode := args.contains "--rel"
+  let args := args.filter (· != "--rel")
   let (posArgs, part) ←
     match args.span (· != "--part") with
     | (pos, ["--part", p]) =>
@@ -310,7 +318,10 @@ def main (args : List String) : IO UInt32 := do
     let h ← openOut s!"{dir}/Cover.lean"
     h.putStr s!"import LRATCatcher.Generated.{name}.Base\n\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
     h.putStr s!"set_option maxHeartbeats 0 in\n"
-    h.putStr s!"theorem coverThm : (negCubesCNF cubes).Unsat :=\n  LRATCatcher.checkLratCnf_sound _ \"{escLean coverStr}\" (by native_decide)\n\n"
+    if relMode then
+      h.putStr s!"theorem coverThm : (base ++ negCubesCNF cubes).Unsat :=\n  LRATCatcher.checkLratCnf_sound _ \"{escLean coverStr}\" (by native_decide)\n\n"
+    else
+      h.putStr s!"theorem coverThm : (negCubesCNF cubes).Unsat :=\n  LRATCatcher.checkLratCnf_sound _ \"{escLean coverStr}\" (by native_decide)\n\n"
     h.putStr s!"end {modPrefix}\n"
     h.flush
 
@@ -333,7 +344,8 @@ def main (args : List String) : IO UInt32 := do
         let openers := String.join ((segProofs.take (m-1)).map (fun p => s!"List.forall_mem_append.mpr ⟨{p}, "))
         openers ++ segProofs.getLast! ++ String.join (List.replicate (m-1) "⟩")
     hm.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
-    hm.putStr s!"theorem base_unsat : base.Unsat :=\n  LRATCatcher.cover_unsat\n    ({comp})\n    coverThm\n\n"
+    let coverLemma := if relMode then "cover_unsat_rel" else "cover_unsat"
+    hm.putStr s!"theorem base_unsat : base.Unsat :=\n  LRATCatcher.{coverLemma}\n    ({comp})\n    coverThm\n\n"
     hm.putStr s!"#print axioms base_unsat\n\nend {modPrefix}\n"
     hm.flush
 
