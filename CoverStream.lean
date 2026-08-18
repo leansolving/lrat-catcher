@@ -166,9 +166,11 @@ def readSubCubes (subicnfDir : String) (i : Nat) : IO (Array Cube) := do
   return cs
 
 def main (args : List String) : IO UInt32 := do
-  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel"
+  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel] [--units-last]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel\n  --units-last: leaf certs were solved from base-first DIMACS (cube units LAST); chunk statements stream (base ++ toCNF c) and transfer via unsat_append_comm"
   let relMode := args.contains "--rel"
   let args := args.filter (· != "--rel")
+  let unitsLast := args.contains "--units-last"
+  let args := args.filter (· != "--units-last")
   let (args, segGroup) ←
     match args.span (· != "--seg-group") with
     | (pre, "--seg-group" :: g :: post) =>
@@ -295,8 +297,17 @@ def main (args : List String) : IO UInt32 := do
         h.putStr s!"def cube{i} : Cube := {cubeLit cubes[i-1]!}\n"
       let cs := String.intercalate ", " (arr.toList.map (fun i => s!"cube{i}"))
       h.putStr s!"def chunkCubes{j} : List Cube := [{cs}]\n\n"
-      for i in arr.toList do
-        h.putStr s!"lrat_stream_cnf leaf{i}_unsat (Cube.leafCNF cube{i} base) \"{escLean s!"{streamDir}/leaf{i}"}\"\n"
+      if unitsLast then
+        -- leaves were solved from base-first DIMACS files (cube units LAST):
+        -- the cert matches `base ++ toCNF c`; transfer to leafCNF form.
+        for i in arr.toList do
+          h.putStr s!"lrat_stream_cnf leaf{i}_raw (base ++ Cube.toCNF cube{i}) \"{escLean s!"{streamDir}/leaf{i}"}\"\n"
+        h.putStr "\n"
+        for i in arr.toList do
+          h.putStr s!"theorem leaf{i}_unsat : (Cube.leafCNF cube{i} base).Unsat :=\n  LRATCatcher.unsat_append_comm leaf{i}_raw\n"
+      else
+        for i in arr.toList do
+          h.putStr s!"lrat_stream_cnf leaf{i}_unsat (Cube.leafCNF cube{i} base) \"{escLean s!"{streamDir}/leaf{i}"}\"\n"
       h.putStr "\n"
       let proof := forallMemProof (arr.toList.map (fun i => s!"leaf{i}_unsat"))
       h.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
