@@ -63,7 +63,14 @@ theorem sat_of_negClause_false {a : Nat → Bool} {c : Cube}
     exact ih h.2
 
 /-- The leaf CNF of a cube: unit clauses first, then the base
-    (the order the exported DIMACS file uses, so LRAT clause IDs match). -/
+    (the order the exported DIMACS file uses, so LRAT clause IDs match).
+
+    WARNING for hand-written pipelines: the leaf DIMACS file handed to the
+    solver must list the cube units BEFORE the base clauses, matching
+    `c.toCNF ++ base`. With the units appended last, every LRAT clause id is
+    off by `|c|` and the import simply returns `false` — not an error, and not
+    caught by a script that only re-checks its own file with an external
+    checker. -/
 def leafCNF (c : Cube) (base : CNF Nat) : CNF Nat := c.toCNF ++ base
 
 end Cube
