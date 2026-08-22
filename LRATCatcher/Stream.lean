@@ -337,6 +337,65 @@ private theorem liff_ofArray_units {n : Nat} (f : DefaultFormula n)
     simp [DefaultFormula.toList, DefaultFormula.ofArray, hrup, hrat]
   rw [ht]
 
+/-! ## Compaction: hole-free snapshots preserve the model set
+
+`serialize` keeps one position per clause id, holes included, so the snapshot
+of a long run carries every id the solver ever allocated even though almost
+all of those clauses are deleted. `compactSnapshot` drops the holes (order
+preserved). The lemmas below show that a compacted snapshot restores to a
+formula with the same clause list as the verbatim one, so unsatisfiability
+transfers across a compacting boundary exactly as across a verbatim boundary.
+Positions shift, so the ids and hints of all subsequent chunks must be
+renumbered to match; that renumbering is data preparation, not trusted code —
+a wrong id or hint makes the per-chunk check fail, never succeed. -/
+
+/-- Drop the holes of a snapshot, preserving the order of live clauses. -/
+def compactSnapshot (snap : Snapshot) : Snapshot :=
+  (snap.filterMap id).map some
+
+private theorem restoreList_compact {n : Nat} (snap : Snapshot) :
+    restoreList n (compactSnapshot snap)
+      = (restoreList n snap).map (fun cs => (cs.filterMap id).map some) := by
+  induction snap with
+  | nil => rfl
+  | cons hd tl ih =>
+    cases hd with
+    | none =>
+      have hc : compactSnapshot (none :: tl) = compactSnapshot tl := by
+        simp [compactSnapshot]
+      rw [hc, ih, restoreList]
+      cases restoreList n tl <;> simp
+    | some ls =>
+      have hc : compactSnapshot (some ls :: tl) = some ls :: compactSnapshot tl := by
+        simp [compactSnapshot]
+      rw [hc, restoreList, restoreList, ih]
+      cases restoreClause n ls <;> cases restoreList n tl <;> simp
+
+private theorem toList_ofArray {n : Nat} (cs : Array (Option (DefaultClause n))) :
+    DefaultFormula.toList (Formula.ofArray cs : DefaultFormula n)
+      = cs.toList.filterMap id := by
+  show DefaultFormula.toList (DefaultFormula.ofArray cs) = cs.toList.filterMap id
+  simp [DefaultFormula.toList, DefaultFormula.ofArray]
+
+/-- Restoring a compacted snapshot yields the same model set as the state the
+    snapshot was taken from: the compacting analogue of the verbatim
+    roundtrip. -/
+theorem liff_restoreD_compactSnapshot_serialize {n : Nat} (f : DefaultFormula n)
+    (hrup : f.rupUnits = #[]) (hrat : f.ratUnits = #[]) :
+    Liff (PosFin n) (restoreD n (compactSnapshot (serialize f))) f := by
+  have hres : restoreList n (compactSnapshot (serialize f))
+      = some ((f.clauses.toList.filterMap id).map some) := by
+    rw [restoreList_compact, restoreList_serialize_eq, Option.map_some]
+  intro p
+  rw [Formula.sat_iff_forall, Formula.sat_iff_forall]
+  have ht : Formula.toList (restoreD n (compactSnapshot (serialize f)))
+      = Formula.toList f := by
+    show DefaultFormula.toList (restoreD n (compactSnapshot (serialize f)))
+      = DefaultFormula.toList f
+    rw [restoreD, hres, toList_ofArray]
+    simp [DefaultFormula.toList, hrup, hrat, List.filterMap_map]
+  rw [ht]
+
 /-! ## Per-module step checks -/
 
 /-- First chunk: start from `cnf` (as the core checker does) and check that
