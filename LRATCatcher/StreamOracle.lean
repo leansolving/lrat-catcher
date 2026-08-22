@@ -197,6 +197,13 @@ private initialize streamPathOverride : IO.Ref (Option String) ← IO.mkRef none
 
 private initialize streamBlockIdx : IO.Ref Nat ← IO.mkRef 0
 
+/-- Leftover bytes of a partially read action (binary mode). -/
+private initialize streamLeftover : IO.Ref ByteArray ← IO.mkRef ByteArray.empty
+
+/-- `none` until the first byte decides the format: `'a'`/`'d'` = binary LRAT,
+    anything else = the line-based ASCII format. -/
+private initialize streamIsBinary : IO.Ref (Option Bool) ← IO.mkRef none
+
 /-- Reset the stream state: drop the cached handle, rewind the block index,
     and set (or clear) the path override. The `lrat_stream` command calls
     this before each check; without a reset, a second streamed check in the
@@ -204,12 +211,19 @@ private initialize streamBlockIdx : IO.Ref Nat ← IO.mkRef 0
 def streamReset (path? : Option String) : IO Unit := do
   streamHandle.set none
   streamBlockIdx.set 0
+  streamLeftover.set ByteArray.empty
+  streamIsBinary.set none
   streamPathOverride.set path?
 
-/-- Read the `i`-th block of complete lines from the stream named by the
-    `streamReset` override or the `LRATCATCHER_STREAM_PATH` environment
-    variable (regular file or FIFO); `none` at end of stream or on any
-    error (fail-safe: the check then returns `false`).
+
+/-- Read the `i`-th block from the stream named by the `streamReset`
+    override or the `LRATCATCHER_STREAM_PATH` environment variable (regular
+    file or FIFO); `none` at end of stream or on any error (fail-safe: the
+    check then returns `false`). The first byte decides the format: `'a'` or
+    `'d'` means binary LRAT (a block is then `blockLines` complete actions,
+    parsed one at a time with the core binary parser), anything else the
+    ASCII format (a block is `blockLines` complete lines via
+    `parseLRATProof`).
 
     The block-index guard serves two purposes: it rejects out-of-order
     requests (the handle can only produce block `i` right after block
@@ -244,20 +258,80 @@ private unsafe def certFeedImpl : Nat → Option (Array IntAction) := fun i =>
         | some b => if b == 0 then blockLines else b
         | none => blockLines
       | none => blockLines
-    let mut buf : String := ""
-    let mut got : Nat := 0
-    for _ in [0:bl] do
-      let line ← h.getLine
-      if line.isEmpty then
-        break
-      buf := buf ++ line
-      got := got + 1
-    streamBlockIdx.set (i + 1)
-    if got == 0 then
-      return none
-    match parseLRATProof buf.toUTF8 with
-    | .ok p => return some (p.map normalizeAction)
-    | .error _ => return none
+    -- first call decides the format from the first byte ('a'/'d' = binary);
+    -- the peeked byte is kept in `streamLeftover`
+    let isBin ← do
+      match ← streamIsBinary.get with
+      | some b => pure b
+      | none =>
+        let first ← h.read 1
+        if first.size == 0 then
+          streamIsBinary.set (some false)
+          pure false
+        else
+          let b := first[0]! == 'a'.toUInt8 || first[0]! == 'd'.toUInt8
+          streamLeftover.set first
+          streamIsBinary.set (some b)
+          pure b
+    if isBin then
+      -- binary mode: a block is `bl` complete actions (or the final partial
+      -- run). Actions are parsed one at a time with the *core* binary
+      -- parser (native code) — a parse error at the buffer end means a
+      -- partially read action (read more), anywhere else malformed data
+      -- (stop; the collected prefix is returned and the next call, seeing
+      -- the same garbage, returns `none` — fail-safe).
+      let mut buf ← streamLeftover.get
+      let mut pos : Nat := 0
+      let mut acts : Array IntAction := #[]
+      let mut eof := false
+      repeat
+        if acts.size ≥ bl then
+          break
+        if pos < buf.size then
+          match Parser.Binary.parseAction ⟨buf, pos⟩ with
+          | .success it a =>
+            acts := acts.push a
+            pos := it.idx
+          | .error it _ =>
+            if it.idx < buf.size || eof then
+              break
+            let chunk ← h.read 1048576
+            if chunk.size == 0 then
+              eof := true
+            else
+              buf := buf ++ chunk
+        else
+          if eof then
+            break
+          let chunk ← h.read 1048576
+          if chunk.size == 0 then
+            eof := true
+          else
+            buf := buf ++ chunk
+      streamBlockIdx.set (i + 1)
+      if acts.isEmpty then
+        return none
+      streamLeftover.set (buf.extract pos buf.size)
+      return some (acts.map normalizeAction)
+    else
+      -- ASCII mode: a block is `bl` complete lines (the peeked byte, if any,
+      -- is the start of the first line)
+      let pre ← streamLeftover.get
+      streamLeftover.set ByteArray.empty
+      let mut buf : String := String.fromUTF8! pre
+      let mut got : Nat := 0
+      for _ in [0:bl] do
+        let line ← h.getLine
+        if line.isEmpty then
+          break
+        buf := buf ++ line
+        got := got + 1
+      streamBlockIdx.set (i + 1)
+      if got == 0 then
+        return none
+      match parseLRATProof buf.toUTF8 with
+      | .ok p => return some (p.map normalizeAction)
+      | .error _ => return none
   with
   | .ok v => v
   | .error _ => none
