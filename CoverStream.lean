@@ -44,6 +44,14 @@ alongside `build.sh`) `mkfifo`s each stream path listed in `streams.tsv` and spa
 a wave, then cleans up. Archive naming: direct leaf `i` → `leaf<i>.lrat.zst`, subleaf
 `k` of parent `i` → `leaf<i>_<k>.lrat.zst`.
 
+For live solve-and-import (no archive), `worker-live.sh` is emitted as a per-chunk
+TEMPLATE: it starts the checker first (blocked on the first FIFO) and solves the
+chunk's leaves one at a time, feeding each certificate into its FIFO and deleting it
+immediately — at most two certificates on scratch at any moment. Do NOT replace this
+with solve-everything-then-check glue: that multiplies per-task scratch by the chunk
+size, and a job farm at full node packing can exhaust node-local scratch cluster-wide
+even when every individual task fits.
+
 Usage:
   lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt \
     subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel]
@@ -433,6 +441,9 @@ def main (args : List String) : IO UInt32 := do
        "# Run from the package root, AFTER driver.sh has built the streaming modules",
        "# (this final pass composes them + the cover; no streams needed here).",
        "set -u",
+       "# wide generated compositions can overflow the OS thread stack during",
+       "# elaboration (exit 134); an unlimited stack is the first remedy",
+       "ulimit -s unlimited 2>/dev/null || true",
        s!"TARGET=\"{modPrefix}.Main\"",
        "ATTEMPTS=\"${1:-}\"; [ -z \"$ATTEMPTS\" ] && ATTEMPTS=3",
        "i=1",
@@ -454,6 +465,7 @@ def main (args : List String) : IO UInt32 := do
        "#   ARCHIVE_DIR holds leaf<i>.lrat.zst and leaf<i>_<k>.lrat.zst",
        "#   WAVE_SIZE modules are fed + built together (default 4; keep small locally).",
        "set -u",
+       "ulimit -s unlimited 2>/dev/null || true",
        "ARCHIVE_DIR=\"${1:-}\"",
        "WAVE_SIZE=\"${2:-4}\"",
        "if [ -z \"$ARCHIVE_DIR\" ]; then echo \"usage: driver.sh ARCHIVE_DIR [WAVE_SIZE]\" 1>&2; exit 1; fi",
@@ -499,6 +511,102 @@ def main (args : List String) : IO UInt32 := do
        "# final composition (Cover + Main); streaming oleans are cached, no streams needed",
        s!"bash {dir}/build.sh"]
     writeOut s!"{dir}/driver.sh" (String.intercalate "\n" driverLines ++ "\n")
+
+    -- ============================ worker-live.sh ============================
+    -- Pipelined live-solve worker TEMPLATE (per chunk module): the checker is
+    -- started FIRST (it blocks on the first FIFO), then leaves are solved one
+    -- at a time and each certificate is cat-ed into its FIFO and deleted —
+    -- at most two certificates on scratch at any moment. The alternative
+    -- (solve everything, then check) multiplies per-task scratch by the chunk
+    -- size, and a farm at full node packing can exhaust node-local scratch
+    -- cluster-wide even though every single task fits comfortably.
+    let workerLines : List String :=
+      ["#!/bin/bash",
+       s!"# Pipelined live-solve worker TEMPLATE for {modPrefix} chunk modules.",
+       "# Usage: worker-live.sh <chunk-number>   (run from the package root;",
+       "# build the Base module first: lake build " ++ modPrefix ++ ".Base:olean).",
+       "# EDIT the CONFIG block before use. Exit codes: 0 ok, 2 check failed,",
+       "# 3 a leaf was SAT (falsifies the cover — investigate!), 99 requeue",
+       "# (infrastructure: low disk, solver crash, timeout; SGE requeues on",
+       "# 'qsub -r y' when the script exits 99).",
+       "set -u",
+       "ulimit -s unlimited 2>/dev/null || true",
+       "",
+       "# ---- CONFIG (edit) ----",
+       s!"BASE=\"{escLean baseFile}\"          # base DIMACS (as passed to the generator)",
+       s!"CUBES=\"{escLean icnfFile}\"         # iCNF cube file ('a ... 0' lines)",
+       "SOLVER=\"cadical\"",
+       "SOLVER_FLAGS=\"--lrat --no-factor\"   # binary LRAT is fine (feed auto-detects)",
+       "TIMEOUT_SOLVE=43200",
+       "TIMEOUT_FEED=7200",
+       "MIN_FREE_G=8                        # requeue if scratch has less than this",
+       s!"K={kChunk}                              # leaves per chunk (generator K)",
+       "TOOLROOT=\"$PWD\"                     # package root (resolve symlinks for lean -R)",
+       "SCRATCH=\"${TMPDIR:-/tmp}\"",
+       "# -----------------------",
+       "",
+       "J=\"${1:?usage: worker-live.sh <chunk-number>}\"",
+       s!"MOD=\"{modPrefix}.Chunk$J\"",
+       s!"SRC=\"{dir}/Chunk$J.lean\"",
+       s!"MANIFEST=\"{dir}/streams.tsv\"",
+       "TC=$(dirname \"$(dirname \"$(command -v lean)\")\")",
+       "export LEAN_PATH=\"$TOOLROOT/.lake/build/lib/lean:$TC/lib/lean\"",
+       "export LEAN_NUM_THREADS=${LEAN_NUM_THREADS:-2}",
+       "",
+       "# scratch guard: a full scratch disk fails every solve with confusing rc",
+       "FREE_G=$(df -P \"$SCRATCH\" | awk 'NR==2{print int($4/1048576)}')",
+       "if [ \"${FREE_G:-0}\" -lt \"$MIN_FREE_G\" ]; then echo \"low scratch (${FREE_G}G) — requeue\" 1>&2; exit 99; fi",
+       "",
+       "# this chunk's FIFOs, in leaf order, from the manifest",
+       "FIFOS=()",
+       "while IFS= read -r f; do FIFOS+=(\"$f\"); done < <(awk -F'\\t' -v M=\"Chunk$J\" '$1==M{print $2}' \"$MANIFEST\")",
+       "[ \"${#FIFOS[@]}\" -gt 0 ] || { echo \"no streams for Chunk$J in $MANIFEST\" 1>&2; exit 99; }",
+       "for f in \"${FIFOS[@]}\"; do mkdir -p \"$(dirname \"$f\")\"; rm -f \"$f\"; mkfifo \"$f\"; done",
+       "cleanup () { for f in \"${FIFOS[@]}\"; do rm -f \"$f\"; done; }",
+       "",
+       "# start the checker FIRST — it blocks reading the first FIFO",
+       "( lean -R \"$TOOLROOT\" \"$SRC\" -o \"$SCRATCH/Chunk$J.olean\" > \"$SCRATCH/lean$J.out\" 2>&1; echo $? > \"$SCRATCH/lean$J.rc\" ) &",
+       "LEANPID=$!",
+       "",
+       "# leaf indices of this chunk: FIFO basenames are leaf<i>",
+       "fail=0",
+       "for f in \"${FIFOS[@]}\"; do",
+       "  i=$(basename \"$f\" | sed 's/[^0-9]*//')",
+       "  # leaf CNF: cube units FIRST, then base clauses (leafCNF c base =",
+       "  # c.toCNF ++ base; LRAT ids are positional). With --units-last",
+       "  # generation, put the base clauses first and the units last instead.",
+       "  LITS=$(awk -v n=\"$i\" '/^a /{c++; if (c==n) {sub(/^a /,\"\"); sub(/ 0$/,\"\"); print; exit}}' \"$CUBES\")",
+       "  NL=$(echo \"$LITS\" | wc -w)",
+       "  read -r NV NC < <(awk '/^p cnf/{print $3, $4; exit}' \"$BASE\")",
+       "  { echo \"p cnf $NV $((NC+NL))\"; for l in $LITS; do echo \"$l 0\"; done; grep -v '^p cnf' \"$BASE\"; } > \"$SCRATCH/leaf$i.cnf\"",
+       "  timeout \"$TIMEOUT_SOLVE\" $SOLVER $SOLVER_FLAGS \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" > \"$SCRATCH/solve$i.log\" 2>&1",
+       "  rc=$?",
+       "  if [ $rc -eq 10 ]; then fail=3; break; fi",
+       "  if [ $rc -ne 20 ] || [ ! -s \"$SCRATCH/cert$i.lrat\" ]; then fail=99; break; fi",
+       "  kill -0 $LEANPID 2>/dev/null || { fail=99; break; }",
+       "  # feed the checker (blocks until consumed = backpressure), then drop the cert",
+       "  timeout \"$TIMEOUT_FEED\" cat \"$SCRATCH/cert$i.lrat\" > \"$f\" || { fail=99; break; }",
+       "  rm -f \"$SCRATCH/cert$i.lrat\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/solve$i.log\"",
+       "done",
+       "",
+       "if [ $fail -ne 0 ]; then",
+       "  kill $LEANPID 2>/dev/null; wait $LEANPID 2>/dev/null; cleanup",
+       "  [ $fail -eq 3 ] && echo \"leaf $i is SAT — the cover is falsified, do NOT requeue\" 1>&2",
+       "  exit $fail",
+       "fi",
+       "wait $LEANPID 2>/dev/null",
+       "rc=$(cat \"$SCRATCH/lean$J.rc\" 2>/dev/null || echo 900)",
+       "cleanup",
+       "if [ \"$rc\" = \"0\" ] && [ -s \"$SCRATCH/Chunk$J.olean\" ]; then",
+       "  DEST=\"$TOOLROOT/.lake/build/lib/lean/$(echo \"" ++ modPrefix ++ "\" | tr '.' '/')\"",
+       "  mkdir -p \"$DEST\"",
+       "  cp \"$SCRATCH/Chunk$J.olean\" \"$DEST/.C$J.$$\" && mv \"$DEST/.C$J.$$\" \"$DEST/Chunk$J.olean\"",
+       "  exit 0",
+       "else",
+       "  head -30 \"$SCRATCH/lean$J.out\" 1>&2",
+       "  exit 2",
+       "fi"]
+    writeOut s!"{dir}/worker-live.sh" (String.intercalate "\n" workerLines ++ "\n")
 
   match part with
   | .range lo hi =>
