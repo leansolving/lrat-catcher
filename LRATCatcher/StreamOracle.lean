@@ -366,7 +366,9 @@ elab "lrat_stream " n:ident ppSpace cnfFile:str : command => do
   let solver := (← IO.getEnv "LRATCATCHER_SOLVER").getD "cadical"
   let verOut ← IO.Process.output { cmd := solver, args := #["--version"] }
   let ver := verOut.stdout.trimAscii.toString
-  let mut flags := #["--lrat", "--no-binary"]
+  -- binary LRAT (the solver default) is fine here: the feed auto-detects it,
+  -- and the FIFO carries 2-3x fewer bytes than with --no-binary
+  let mut flags := #["--lrat"]
   if (ver.takeWhile (· != '.')).toNat?.all (· ≥ 3) then
     flags := flags.push "--no-factor"
   logInfo m!"lrat_stream: {solver} {ver}, streaming (zero-storage)"
