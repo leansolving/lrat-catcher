@@ -166,11 +166,20 @@ def readSubCubes (subicnfDir : String) (i : Nat) : IO (Array Cube) := do
   return cs
 
 def main (args : List String) : IO UInt32 := do
-  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel] [--units-last]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel\n  --units-last: leaf certs were solved from base-first DIMACS (cube units LAST); chunk statements stream (base ++ toCNF c) and transfer via unsat_append_comm"
+  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel] [--units-last] [--compact KC]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel\n  --units-last: leaf certs were solved from base-first DIMACS (cube units LAST); chunk statements stream (base ++ toCNF c) and transfer via unsat_append_comm\n  --compact KC: leaf checks compact their clause database every KC feed blocks (lrat_stream_cnf_compact); the archived certificates MUST be pre-renumbered with lratcatch-compact-renumber (same KC and block size)"
   let relMode := args.contains "--rel"
   let args := args.filter (· != "--rel")
   let unitsLast := args.contains "--units-last"
   let args := args.filter (· != "--units-last")
+  let (args, compactK) ←
+    match args.span (· != "--compact") with
+    | (pre, "--compact" :: kc :: post) =>
+      match kc.toNat? with
+      | some n => if n ≥ 1 then pure (pre ++ post, some n)
+                  else die "--compact must be ≥ 1"
+      | none => die s!"bad --compact '{kc}'"
+    | (pre, []) => pure (pre, none)
+    | _ => die usage
   let (args, segGroup) ←
     match args.span (· != "--seg-group") with
     | (pre, "--seg-group" :: g :: post) =>
@@ -252,6 +261,11 @@ def main (args : List String) : IO UInt32 := do
   let modPrefix := s!"LRATCatcher.Generated.{name}"
   let dir := s!"LRATCatcher/Generated/{name}"
 
+  -- streaming command emitted for each leaf: plain, or compacting (--compact)
+  let streamCmd := match compactK with
+    | some kc => (s!"lrat_stream_cnf_compact", s!" {kc}")
+    | none => ("lrat_stream_cnf", "")
+
   -- global number of chunk j is j; global number of parent rank r (0-based) is numChunks+r+1
   let parentGnum := fun (r : Nat) => numChunks + r + 1
 
@@ -271,7 +285,7 @@ def main (args : List String) : IO UInt32 := do
   -- Deliberately tiny: only the base CNF and the canonical cube list, each a
   -- single string-literal def. Per-cube defs live in the module that uses
   -- them (Chunk<j>/Parent<i>): elaborating one `def cube<i> := [...]` costs
-  -- ~15 ms and ~0.6 MB of elaborator RSS, so a Norin/hexagon-class run with
+  -- ~15 ms and ~0.6 MB of elaborator RSS, so a run with
   -- ~3·10⁵ cubes in ONE module needs hours and ~200 GB (observed: 50K defs =
   -- 752 s / 32 GB), and every worker would load that olean. `cubes` is
   -- instead parsed from the embedded iCNF text; Main proves it equal to the
@@ -301,13 +315,13 @@ def main (args : List String) : IO UInt32 := do
         -- leaves were solved from base-first DIMACS files (cube units LAST):
         -- the cert matches `base ++ toCNF c`; transfer to leafCNF form.
         for i in arr.toList do
-          h.putStr s!"lrat_stream_cnf leaf{i}_raw (base ++ Cube.toCNF cube{i}) \"{escLean s!"{streamDir}/leaf{i}"}\"\n"
+          h.putStr s!"{streamCmd.1} leaf{i}_raw (base ++ Cube.toCNF cube{i}) \"{escLean s!"{streamDir}/leaf{i}"}\"{streamCmd.2}\n"
         h.putStr "\n"
         for i in arr.toList do
           h.putStr s!"theorem leaf{i}_unsat : (Cube.leafCNF cube{i} base).Unsat :=\n  LRATCatcher.unsat_append_comm leaf{i}_raw\n"
       else
         for i in arr.toList do
-          h.putStr s!"lrat_stream_cnf leaf{i}_unsat (Cube.leafCNF cube{i} base) \"{escLean s!"{streamDir}/leaf{i}"}\"\n"
+          h.putStr s!"{streamCmd.1} leaf{i}_unsat (Cube.leafCNF cube{i} base) \"{escLean s!"{streamDir}/leaf{i}"}\"{streamCmd.2}\n"
       h.putStr "\n"
       let proof := forallMemProof (arr.toList.map (fun i => s!"leaf{i}_unsat"))
       h.putStr s!"set_option maxHeartbeats 0 in\nset_option maxRecDepth 1000000 in\n"
@@ -335,7 +349,7 @@ def main (args : List String) : IO UInt32 := do
       h.putStr s!"def subs{i} : List Cube := [{subsL}]\n\n"
       -- streamed subleaf refutations (parent-leaf-then-subunit order)
       for k in [1:m+1] do
-        h.putStr s!"lrat_stream_cnf sub{i}_{k}_raw ((Cube.leafCNF cube{i} base) ++ (Cube.toCNF sub{i}_{k})) \"{escLean s!"{streamDir}/leaf{i}_{k}"}\"\n"
+        h.putStr s!"{streamCmd.1} sub{i}_{k}_raw ((Cube.leafCNF cube{i} base) ++ (Cube.toCNF sub{i}_{k})) \"{escLean s!"{streamDir}/leaf{i}_{k}"}\"{streamCmd.2}\n"
       h.putStr "\n"
       -- transfer to leafCNF form via unsat_append_comm
       for k in [1:m+1] do
@@ -492,4 +506,6 @@ def main (args : List String) : IO UInt32 := do
   | _ =>
     IO.println s!"lratcatch-cover-stream: {n} top cubes ({numParents} re-cubed), {numChunks} chunk(s) + {numParents} parent(s) = {totalMods} module(s) in {dir}/"
     IO.println s!"  stream + build: bash {dir}/driver.sh ARCHIVE_DIR [WAVE_SIZE]   # from package root"
+    if let some kc := compactK then
+      IO.println s!"  --compact {kc}: archive certificates MUST be pre-renumbered (lratcatch-compact-renumber base K={kc}, matching block size)"
   return (0 : UInt32)

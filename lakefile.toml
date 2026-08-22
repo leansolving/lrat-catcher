@@ -27,3 +27,7 @@ root = "StreamGen"
 [[lean_exe]]
 name = "lratcatch-normalize"
 root = "Normalize"
+
+[[lean_exe]]
+name = "lratcatch-compact-renumber"
+root = "CompactRenumber"

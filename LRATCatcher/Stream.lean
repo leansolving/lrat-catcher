@@ -282,7 +282,7 @@ theorem restoreD_ready {n : Nat} (snap : Snapshot) :
   unfold restoreD
   split <;> exact ⟨Formula.readyForRupAdd_ofArray _, Formula.readyForRatAdd_ofArray _⟩
 
-private theorem units_empty_of_ready {n : Nat} {f : DefaultFormula n}
+theorem units_empty_of_ready {n : Nat} {f : DefaultFormula n}
     (h1 : Formula.ReadyForRupAdd f) (h2 : Formula.ReadyForRatAdd f) :
     f.rupUnits = #[] ∧ f.ratUnits = #[] := by
   have h1' : DefaultFormula.ReadyForRupAdd f := h1
@@ -349,27 +349,43 @@ Positions shift, so the ids and hints of all subsequent chunks must be
 renumbered to match; that renumbering is data preparation, not trusted code —
 a wrong id or hint makes the per-chunk check fail, never succeed. -/
 
-/-- Drop the holes of a snapshot, preserving the order of live clauses. -/
-def compactSnapshot (snap : Snapshot) : Snapshot :=
+/-- The hole-dropping core of `compactSnapshot` (order of live clauses
+    preserved). -/
+private def compactCore (snap : Snapshot) : Snapshot :=
   (snap.filterMap id).map some
 
-private theorem restoreList_compact {n : Nat} (snap : Snapshot) :
-    restoreList n (compactSnapshot snap)
+private theorem restoreList_compactCore {n : Nat} (snap : Snapshot) :
+    restoreList n (compactCore snap)
       = (restoreList n snap).map (fun cs => (cs.filterMap id).map some) := by
   induction snap with
   | nil => rfl
   | cons hd tl ih =>
     cases hd with
     | none =>
-      have hc : compactSnapshot (none :: tl) = compactSnapshot tl := by
-        simp [compactSnapshot]
+      have hc : compactCore (none :: tl) = compactCore tl := by
+        simp [compactCore]
       rw [hc, ih, restoreList]
       cases restoreList n tl <;> simp
     | some ls =>
-      have hc : compactSnapshot (some ls :: tl) = some ls :: compactSnapshot tl := by
-        simp [compactSnapshot]
+      have hc : compactCore (some ls :: tl) = some ls :: compactCore tl := by
+        simp [compactCore]
       rw [hc, restoreList, restoreList, ih]
       cases restoreClause n ls <;> cases restoreList n tl <;> simp
+
+/-- Drop the holes of a snapshot, preserving the order of live clauses. The
+    leading `none` keeps the checker's `clauses[0] = none` layout invariant,
+    so every live clause lands at a position ≥ 1 and stays addressable by
+    LRAT hints (`0` terminates a hint list, so position 0 could never be
+    referenced). -/
+def compactSnapshot (snap : Snapshot) : Snapshot :=
+  none :: compactCore snap
+
+private theorem restoreList_compact {n : Nat} (snap : Snapshot) :
+    restoreList n (compactSnapshot snap)
+      = (restoreList n snap).map (fun cs => none :: (cs.filterMap id).map some) := by
+  show restoreList n (none :: compactCore snap) = _
+  rw [restoreList, restoreList_compactCore]
+  cases restoreList n snap <;> simp
 
 private theorem toList_ofArray {n : Nat} (cs : Array (Option (DefaultClause n))) :
     DefaultFormula.toList (Formula.ofArray cs : DefaultFormula n)
@@ -384,7 +400,7 @@ theorem liff_restoreD_compactSnapshot_serialize {n : Nat} (f : DefaultFormula n)
     (hrup : f.rupUnits = #[]) (hrat : f.ratUnits = #[]) :
     Liff (PosFin n) (restoreD n (compactSnapshot (serialize f))) f := by
   have hres : restoreList n (compactSnapshot (serialize f))
-      = some ((f.clauses.toList.filterMap id).map some) := by
+      = some (none :: (f.clauses.toList.filterMap id).map some) := by
     rw [restoreList_compact, restoreList_serialize_eq, Option.map_some]
   intro p
   rw [Formula.sat_iff_forall, Formula.sat_iff_forall]
@@ -415,6 +431,23 @@ def stepMid (n : Nat) (prev : Snapshot) (chunk : Array IntAction) (next : Snapsh
 def stepFinish (n : Nat) (prev : Snapshot) (chunk : Array IntAction) : Bool :=
   match runChunk (restoreD n prev) chunk 0 with
   | some .refuted => true
+  | _ => false
+
+/-- Compacting variant of `stepStart`: the boundary snapshot is hole-free
+    (`compactSnapshot`), so the id space restarts at the live-clause count.
+    The ids and hints of all subsequent chunks must be renumbered to the
+    compacted positions — untrusted data preparation: a wrong renumbering
+    fails a step check, never succeeds. -/
+def stepStartC (cnf : CNF Nat) (chunk : Array IntAction) (next : Snapshot) : Bool :=
+  match runChunk (CNF.convertLRAT cnf) chunk 0 with
+  | some (.more f') => compactSnapshot (serialize f') == next
+  | _ => false
+
+/-- Compacting variant of `stepMid` (see `stepStartC`). `prev` may itself be
+    a compacted snapshot — `restoreD` does not care. -/
+def stepMidC (n : Nat) (prev : Snapshot) (chunk : Array IntAction) (next : Snapshot) : Bool :=
+  match runChunk (restoreD n prev) chunk 0 with
+  | some (.more f') => compactSnapshot (serialize f') == next
   | _ => false
 
 /-! ## Step soundness (composes to `cnf.Unsat`, one `native_decide` per chunk) -/
@@ -462,6 +495,41 @@ theorem stepFinish_sound {n : Nat} {prev : Snapshot} {chunk : Array IntAction}
   next heq =>
     obtain ⟨hready, hmore⟩ := restoreD_ready (n := n) prev
     exact runChunk_refuted_sound _ _ _ hready hmore heq
+  next => simp at h
+
+theorem stepStartC_sound {cnf : CNF Nat} {chunk : Array IntAction} {next : Snapshot}
+    (h : stepStartC cnf chunk next = true) :
+    Unsatisfiable (PosFin (cnf.numLiterals + 1)) (restoreD (cnf.numLiterals + 1) next) →
+      cnf.Unsat := by
+  unfold stepStartC at h
+  split at h
+  next f' heq =>
+    have hnext : next = compactSnapshot (serialize f') := (eq_of_beq h).symm
+    obtain ⟨r1, r2, himp⟩ := runChunk_more_sound _ _ _
+      (CNF.convertLRAT_readyForRupAdd cnf) (CNF.convertLRAT_readyForRatAdd cnf) heq
+    obtain ⟨hu1, hu2⟩ := units_empty_of_ready r1 r2
+    intro hunsat
+    apply CNF.unsat_of_convertLRAT_unsat
+    apply himp
+    rw [hnext] at hunsat
+    exact (liff_unsat _ _ (liff_restoreD_compactSnapshot_serialize f' hu1 hu2)).mp hunsat
+  next => simp at h
+
+theorem stepMidC_sound {n : Nat} {prev : Snapshot} {chunk : Array IntAction} {next : Snapshot}
+    (h : stepMidC n prev chunk next = true) :
+    Unsatisfiable (PosFin n) (restoreD n next) →
+      Unsatisfiable (PosFin n) (restoreD n prev) := by
+  unfold stepMidC at h
+  split at h
+  next f' heq =>
+    have hnext : next = compactSnapshot (serialize f') := (eq_of_beq h).symm
+    obtain ⟨hready, hmore⟩ := restoreD_ready (n := n) prev
+    obtain ⟨r1, r2, himp⟩ := runChunk_more_sound _ _ _ hready hmore heq
+    obtain ⟨hu1, hu2⟩ := units_empty_of_ready r1 r2
+    intro hunsat
+    apply himp
+    rw [hnext] at hunsat
+    exact (liff_unsat _ _ (liff_restoreD_compactSnapshot_serialize f' hu1 hu2)).mp hunsat
   next => simp at h
 
 /-! ## Externalization (presolve/derivation handoff)

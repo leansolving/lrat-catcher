@@ -89,6 +89,95 @@ theorem checkStreamCnf_sound (cnf : CNF Nat) (feed : Nat → Option (Array IntAc
     (checkStream_sound feed fuel (CNF.convertLRAT cnf) 0
       (CNF.convertLRAT_readyForRupAdd cnf) (CNF.convertLRAT_readyForRatAdd cnf) h)
 
+/-! ## Compacting streaming check
+
+The clause array of a long run keeps one slot per clause id ever allocated
+(deletion only sets slots to `none`), so monolithic RSS grows with the id
+space even though almost every clause is deleted. `checkStreamC` compacts the
+state every `k` feed blocks: serialize, drop the holes (`compactSnapshot`),
+restore. The model set is preserved exactly
+(`liff_restoreD_compactSnapshot_serialize`), so soundness composes as before.
+The feed must supply ids and hints renumbered to the compacted positions —
+untrusted data preparation (`lratcatch-compact-renumber` for files/archives):
+a wrong renumbering fails the check, never succeeds. -/
+
+/-- The state handed to the next block: compacted when `k` divides `i` (the
+    1-based count of blocks processed so far), unchanged otherwise. `k = 0`
+    never compacts. -/
+def compactEvery (k i : Nat) {n : Nat} (f : DefaultFormula n) : DefaultFormula n :=
+  if k != 0 && i % k == 0 then restoreD n (compactSnapshot (serialize f)) else f
+
+theorem compactEvery_ready {n : Nat} (k i : Nat) {f : DefaultFormula n}
+    (h1 : Formula.ReadyForRupAdd f) (h2 : Formula.ReadyForRatAdd f) :
+    Formula.ReadyForRupAdd (compactEvery k i f) ∧
+      Formula.ReadyForRatAdd (compactEvery k i f) := by
+  unfold compactEvery
+  split
+  · exact restoreD_ready _
+  · exact ⟨h1, h2⟩
+
+theorem compactEvery_unsat {n : Nat} (k i : Nat) {f : DefaultFormula n}
+    (hu1 : f.rupUnits = #[]) (hu2 : f.ratUnits = #[])
+    (h : Unsatisfiable (PosFin n) (compactEvery k i f)) :
+    Unsatisfiable (PosFin n) f := by
+  unfold compactEvery at h
+  split at h
+  · exact (liff_unsat _ _ (liff_restoreD_compactSnapshot_serialize f hu1 hu2)).mp h
+  · exact h
+
+/-- Like `checkStream`, but every `k` blocks the clause database is compacted
+    (holes dropped, live clauses shifted down). `k = 0` never compacts. -/
+def checkStreamC {n : Nat} (feed : Nat → Option (Array IntAction)) (k : Nat) :
+    DefaultFormula n → Nat → Nat → Bool
+  | _, 0, _ => false
+  | f, fuel + 1, i =>
+    match feed i with
+    | none => false
+    | some chunk =>
+      match runChunk f chunk 0 with
+      | some .refuted => true
+      | some (.more f') => checkStreamC feed k (compactEvery k (i + 1) f') fuel (i + 1)
+      | none => false
+
+theorem checkStreamC_sound {n : Nat} (feed : Nat → Option (Array IntAction)) (k : Nat)
+    (fuel : Nat) :
+    ∀ (f : DefaultFormula n) (i : Nat),
+      Formula.ReadyForRupAdd f → Formula.ReadyForRatAdd f →
+      checkStreamC feed k f fuel i = true → Unsatisfiable (PosFin n) f := by
+  induction fuel with
+  | zero => intro f i _ _ h; simp [checkStreamC] at h
+  | succ fuel ih =>
+    intro f i h1 h2 h
+    rw [checkStreamC] at h
+    cases hfeed : feed i with
+    | none => simp [hfeed] at h
+    | some chunk =>
+      simp only [hfeed] at h
+      cases hrun : runChunk f chunk 0 with
+      | none => simp [hrun] at h
+      | some out =>
+        simp only [hrun] at h
+        cases out with
+        | refuted => exact runChunk_refuted_sound f chunk 0 h1 h2 hrun
+        | more f' =>
+          obtain ⟨r1, r2, himp⟩ := runChunk_more_sound f chunk 0 h1 h2 hrun
+          obtain ⟨hu1, hu2⟩ := units_empty_of_ready r1 r2
+          obtain ⟨c1, c2⟩ := compactEvery_ready k (i + 1) r1 r2
+          exact himp (compactEvery_unsat k (i + 1) hu1 hu2
+            (ih (compactEvery k (i + 1) f') (i + 1) c1 c2 h))
+
+/-- Compacting streaming check of a `CNF Nat`. `k` (blocks between
+    compactions) is part of the checked statement. -/
+def checkStreamCnfC (cnf : CNF Nat) (feed : Nat → Option (Array IntAction))
+    (fuel k : Nat) : Bool :=
+  checkStreamC feed k (CNF.convertLRAT cnf) fuel 0
+
+theorem checkStreamCnfC_sound (cnf : CNF Nat) (feed : Nat → Option (Array IntAction))
+    (fuel k : Nat) (h : checkStreamCnfC cnf feed fuel k = true) : cnf.Unsat :=
+  CNF.unsat_of_convertLRAT_unsat cnf
+    (checkStreamC_sound feed k fuel (CNF.convertLRAT cnf) 0
+      (CNF.convertLRAT_readyForRupAdd cnf) (CNF.convertLRAT_readyForRatAdd cnf) h)
+
 /-- Fuel for streamed checks: an upper bound on the number of feed blocks
     (2²⁴ blocks of 4096 lines ≈ 7·10¹⁰ certificate lines). Fuel is only a
     termination device, never a trusted quantity. -/
@@ -96,7 +185,10 @@ def streamFuel : Nat := 1 <<< 24
 
 /-! ## The audited shim (design B's entire added trust surface) -/
 
-/-- Lines per feed call. -/
+/-- Lines per feed call. `LRATCATCHER_STREAM_BLOCK` overrides (used by tests
+    to exercise compaction on small certificates, and it must match the
+    block size the compact-renumber tool assumed). The value never affects
+    soundness — any blocking is checked; a mismatch fails the check. -/
 private def blockLines : Nat := 4096
 
 private initialize streamHandle : IO.Ref (Option IO.FS.Handle) ← IO.mkRef none
@@ -147,9 +239,14 @@ private unsafe def certFeedImpl : Nat → Option (Array IntAction) := fun i =>
         let h ← IO.FS.Handle.mk path .read
         streamHandle.set (some h)
         pure h
+    let bl := match ← IO.getEnv "LRATCATCHER_STREAM_BLOCK" with
+      | some s => match s.toNat? with
+        | some b => if b == 0 then blockLines else b
+        | none => blockLines
+      | none => blockLines
     let mut buf : String := ""
     let mut got : Nat := 0
-    for _ in [0:blockLines] do
+    for _ in [0:bl] do
       let line ← h.getLine
       if line.isEmpty then
         break
@@ -237,6 +334,27 @@ elab "lrat_stream_cnf " n:ident ppSpace t:term:max ppSpace path:str : command =>
       theorem $n : ($t : Std.Sat.CNF Nat).Unsat :=
         LRATCatcher.checkStreamCnf_sound ($t : Std.Sat.CNF Nat)
           LRATCatcher.certFeed LRATCatcher.streamFuel (by native_decide)))
+  finally
+    streamReset none
+
+open Lean Elab Command in
+/-- `lrat_stream_cnf_compact name (t) "path" k`: like `lrat_stream_cnf`, but
+    the checker compacts its clause database every `k` feed blocks
+    (`checkStreamCnfC`), so memory tracks the live clause set instead of the
+    id space. The stream at `path` must be the certificate *pre-renumbered*
+    to the compacted positions (`lratcatch-compact-renumber`, same `k` and
+    block size); a mismatch fails the check. `k` is part of the checked
+    statement. -/
+elab "lrat_stream_cnf_compact " n:ident ppSpace t:term:max ppSpace path:str ppSpace k:num : command => do
+  try
+    streamReset (some path.getString)
+    let kLit := Syntax.mkNatLit k.getNat
+    elabCommand (← `(command|
+      set_option Elab.async false in
+      set_option maxHeartbeats 0 in
+      theorem $n : ($t : Std.Sat.CNF Nat).Unsat :=
+        LRATCatcher.checkStreamCnfC_sound ($t : Std.Sat.CNF Nat)
+          LRATCatcher.certFeed LRATCatcher.streamFuel $kLit (by native_decide)))
   finally
     streamReset none
 
