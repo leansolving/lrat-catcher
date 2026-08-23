@@ -3,6 +3,7 @@ defaultTargets = ["LRATCatcher"]
 
 [[lean_lib]]
 name = "LRATCatcher"
+precompileModules = true
 
 [[lean_exe]]
 name = "lratcatch-export"
