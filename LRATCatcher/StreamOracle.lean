@@ -15,12 +15,19 @@ import LRATCatcher.Reflect
 
   ## Trust discussion (the point of this design)
 
-  `certFeed` is `opaque`: it has *no* logical value, so no false proposition
+  Each stream import declares its own `opaque` feed constant
+  (`<name>_feed`, all sharing the audited implementation `certFeedImpl`):
+  an opaque constant has *no* logical value, so no false proposition
   becomes provable — the `native_decide` axiom instance merely pins its value
-  to whatever bytes arrived during evaluation. The added trust over file-mode
-  native checking is exactly the audited shim `certFeedImpl` below (a
-  buffered line reader + the LRAT parser); the checker logic itself stays the
-  verified one. Do NOT replace `opaque` by a `def` with a differing
+  to whatever bytes arrived during evaluation, and the constant could have
+  been defined to return exactly those bytes. The constants are per-import
+  so that this reading survives composition: several imports in one
+  environment pin *different* constants, keeping the recorded axiom set
+  jointly satisfiable (one shared constant pinned to two different block
+  sequences at the same indices would admit no model). The added trust over
+  file-mode native checking is exactly the audited shim `certFeedImpl` below
+  (a buffered line reader + the LRAT parser); the checker logic itself stays
+  the verified one. Do NOT replace `opaque` by a `def` with a differing
   `@[implemented_by]`: that would make `native_decide` assert a proposition
   that is provably false. And the shim must genuinely *use* its block-index
   argument (the guard in `certFeedImpl`): an argument-ignoring body is a
@@ -234,7 +241,7 @@ def streamReset (path? : Option String) : IO Unit := do
     That failure is sound (the checker rejects the repeated blocks; this is
     exactly what MEM-noted "sorryAx transient" runs were) but fatal to
     streaming. Do not "simplify" the guard away. -/
-private unsafe def certFeedImpl : Nat → Option (Array IntAction) := fun i =>
+unsafe def certFeedImpl : Nat → Option (Array IntAction) := fun i =>
   match unsafeIO do
     let expected ← streamBlockIdx.get
     unless i == expected do
@@ -336,8 +343,22 @@ private unsafe def certFeedImpl : Nat → Option (Array IntAction) := fun i =>
   | .ok v => v
   | .error _ => none
 
+/-- The type of a certificate feed. Emitted per-import constants use this
+    (fully qualified) so they elaborate in any user namespace. -/
+abbrev FeedTy := Nat → Option (Array IntAction)
+
 /-- The stream oracle: opaque (no logical value; see module docstring). Its
-    native implementation is the audited shim above. -/
+    native implementation is the audited shim above.
+
+    NOTE: since the per-import-constant change, the stream commands below no
+    longer reference this shared constant — each import declares its OWN
+    opaque feed constant (`<name>_feed`, same implementation). A single
+    shared constant would let two imports in one environment pin the same
+    constant to different block sequences at the same indices, making the
+    recorded native-evaluation axioms jointly unsatisfiable; per-import
+    constants keep the axiom set satisfiable (each constant could have been
+    defined to return exactly the bytes its run observed). `certFeed` is
+    kept for reference and ad-hoc use with a single import. -/
 @[implemented_by certFeedImpl]
 opaque certFeed : Nat → Option (Array IntAction)
 
@@ -380,12 +401,16 @@ elab "lrat_stream " n:ident ppSpace cnfFile:str : command => do
   try
     streamReset (some fifo.toString)
     let cnfLit := Syntax.mkStrLit cnfStr
+    let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
+    elabCommand (← `(command|
+      @[implemented_by LRATCatcher.certFeedImpl]
+      opaque $feedId : Nat → Option (Array Std.Tactic.BVDecide.LRAT.IntAction)))
     elabCommand (← `(command|
       set_option Elab.async false in
       set_option maxHeartbeats 0 in
       theorem $n : (LRATCatcher.parseDimacs $cnfLit).Unsat :=
         LRATCatcher.checkStreamCnf_sound (LRATCatcher.parseDimacs $cnfLit)
-          LRATCatcher.certFeed LRATCatcher.streamFuel (by native_decide)))
+          $feedId LRATCatcher.streamFuel (by native_decide)))
   finally
     streamReset none
     try child.kill catch _ => pure ()
@@ -404,12 +429,16 @@ open Lean Elab Command in
 elab "lrat_stream_cnf " n:ident ppSpace t:term:max ppSpace path:str : command => do
   try
     streamReset (some path.getString)
+    let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
+    elabCommand (← `(command|
+      @[implemented_by LRATCatcher.certFeedImpl]
+      opaque $feedId : Nat → Option (Array Std.Tactic.BVDecide.LRAT.IntAction)))
     elabCommand (← `(command|
       set_option Elab.async false in
       set_option maxHeartbeats 0 in
       theorem $n : ($t : Std.Sat.CNF Nat).Unsat :=
         LRATCatcher.checkStreamCnf_sound ($t : Std.Sat.CNF Nat)
-          LRATCatcher.certFeed LRATCatcher.streamFuel (by native_decide)))
+          $feedId LRATCatcher.streamFuel (by native_decide)))
   finally
     streamReset none
 
@@ -425,12 +454,16 @@ elab "lrat_stream_cnf_compact " n:ident ppSpace t:term:max ppSpace path:str ppSp
   try
     streamReset (some path.getString)
     let kLit := Syntax.mkNatLit k.getNat
+    let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
+    elabCommand (← `(command|
+      @[implemented_by LRATCatcher.certFeedImpl]
+      opaque $feedId : Nat → Option (Array Std.Tactic.BVDecide.LRAT.IntAction)))
     elabCommand (← `(command|
       set_option Elab.async false in
       set_option maxHeartbeats 0 in
       theorem $n : ($t : Std.Sat.CNF Nat).Unsat :=
         LRATCatcher.checkStreamCnfC_sound ($t : Std.Sat.CNF Nat)
-          LRATCatcher.certFeed LRATCatcher.streamFuel $kLit (by native_decide)))
+          $feedId LRATCatcher.streamFuel $kLit (by native_decide)))
   finally
     streamReset none
 
