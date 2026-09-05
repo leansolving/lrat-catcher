@@ -21,8 +21,9 @@ There is no Mathlib dependency.
 - **Lean 4**, version pinned by `lean-toolchain` (currently `v4.30.0`).
   Install [`elan`](https://github.com/leanprover/elan); `lake` fetches the
   toolchain on first build.
-- **A SAT solver**, needed only for `lrat_decide`, which invokes the solver at
-  build time (for example `DecideTest`, `LeafBench`).
+- **A SAT solver**, needed by the commands that run the solver at build time
+  (`lrat_decide`, `lrat_stream`; for example `DecideTest`, `LeafBench`,
+  `StreamCmdTest`) and by the worked example `examples/schur4cc/run.sh`.
   [CaDiCaL](https://github.com/arminbiere/cadical) 3.0.0 is the default
   (`brew install cadical`, or build from source). Every other command,
   including the showcase tests, replays an existing `.lrat` file and needs no
@@ -143,8 +144,11 @@ of magnitude more memory than the certificate's size. For certificates where
 that is too much, the resumable checker (`LRATCatcher/Stream.lean`) splits
 one certificate into chunks whose intermediate checker states cross module
 boundaries as plain-data snapshots, and composes the per-chunk checks with
-proved lemmas — memory is bounded by the chunk size plus the live clause
-database, independent of certificate size:
+proved lemmas. Memory is then bounded by the chunk size plus the checker's
+clause array. That array keeps one slot per clause id ever allocated, so on
+long certificates it still grows with the largest id even though almost every
+clause has been deleted; the compaction described below removes that growth
+and bounds memory by the live clauses alone.
 
 ```sh
 lake exe lratcatch-stream-gen chunk base.cnf cert.lrat Name chunkLines [--delete-cert]
@@ -171,6 +175,20 @@ trust over native mode is exactly the small audited reader shim
 (`LRATCatcher/StreamOracle.lean`; see its module docstring for the trust
 discussion). The resulting `.olean` carries the theorem but no replayable
 evidence — rebuilding re-runs the solver.
+
+**Compaction (memory bounded by live clauses).** `lrat_stream_cnf_compact name
+(cnf) "path" K` and `lratcatch-cover-stream --compact K` check a stream with
+`checkStreamCnfC`, which every `K` feed blocks drops the deleted slots from
+the clause array and shifts the live clauses down (`compactSnapshot`; the
+model set is preserved, `liff_restoreD_compactSnapshot_serialize`). The
+certificate must then carry ids and hints renumbered to the compacted
+positions: `lratcatch-compact-renumber base.cnf in.lrat out.lrat K` does this
+streaming, line by line, with the same `K` and block size (`-` for
+stdin/stdout, so it sits in a `zstd` pipeline). `K` is part of the checked
+statement; a wrong renumbering fails the check and can never make it succeed.
+A related tool, `lratcatch-normalize base.cnf in.lrat out.lrat`, rewrites
+certificates whose addition ids have gaps (as `drat-trim -L` produces) to the
+dense numbering the core checker expects.
 
 **Certified presolve.** A simplification run of the solver
 (`cadical -P4 -c 0 -d 0 --lrat --no-binary --no-factor F.cnf deriv.lrat`)
@@ -277,6 +295,12 @@ explains what the theorem states; the generated modules are checked in under
   emits a chunked module set for one large certificate, or checks a
   derivation and externalizes the derived formula (see
   [Streaming import](#streaming-import-large-certificates)).
+- `lake exe lratcatch-compact-renumber base.cnf in.lrat out.lrat K [--block B]`
+  renumbers a certificate, streaming, to the positions the compacting checker
+  uses (`lrat_stream_cnf_compact` / `--compact K`); `-` reads stdin or writes
+  stdout.
+- `lake exe lratcatch-normalize base.cnf in.lrat out.lrat` renumbers a
+  gapped-id certificate (e.g. from `drat-trim -L`) to dense ids.
 - `scripts/stream_fifo.sh [runs]` exercises the zero-storage FIFO path
   end-to-end against a live solver.
 - `lake exe lratcatch-gen schur k n out.cnf` (`k` colors on `{1..n}`) and
