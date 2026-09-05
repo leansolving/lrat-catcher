@@ -18,3 +18,6 @@ PAPER/auto/
 PAPER/figsrc/*.png
 PAPER/figsrc/*.svg
 PAPER/figsrc/*.pdf
+
+# certificates produced by examples/schur4cc/run.sh (~280 MB)
+examples/schur4cc/leaves/

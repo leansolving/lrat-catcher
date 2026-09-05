@@ -67,9 +67,15 @@ the concatenated DIMACS with the base clauses FIRST, so LRAT clause ids line up.
 `negsubdir/leaf<i>_negsub.lrat`: the sub-cover cert for parent `i` (embedded).
 `streamdir`: a path *prefix* used verbatim in the generated `lrat_stream_cnf` commands.
 `K` (default 16): direct leaves per chunk module.
+`--base-term T [--import M …]`: state `base` as the Lean term `T` (an encoder applied
+to its parameters, imported from the modules `M`) instead of the parsed DIMACS text;
+`base.cnf` must then be the printout of `T` (`lratcatch-gen`), which the leaf checks
+enforce (a mismatch fails, never proves).
+`--root R`: module-name root of the emitted set (default `LRATCatcher.Generated`).
 
-The final statement is `(LRATCatcher.parseDimacs «base contents»).Unsat`; the trust base
-is kernel + compiler with one `native_decide` axiom per streaming/native module (visible
+The final statement is `base.Unsat`, with `base` either
+`LRATCatcher.parseDimacs «base contents»` or the `--base-term`; the trust base is
+kernel + compiler with one `native_decide` axiom per streaming/native module (visible
 in `#print axioms base_unsat`).
 -/
 
@@ -174,7 +180,7 @@ def readSubCubes (subicnfDir : String) (i : Nat) : IO (Array Cube) := do
   return cs
 
 def main (args : List String) : IO UInt32 := do
-  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel] [--units-last] [--compact KC]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel\n  --units-last: leaf certs were solved from base-first DIMACS (cube units LAST); chunk statements stream (base ++ toCNF c) and transfer via unsat_append_comm\n  --compact KC: leaf checks compact their clause database every KC feed blocks (lrat_stream_cnf_compact); the archived certificates MUST be pre-renumbered with lratcatch-compact-renumber (same KC and block size)"
+  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel] [--units-last] [--compact KC] [--base-term T] [--import M]... [--root R]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel\n  --units-last: leaf certs were solved from base-first DIMACS (cube units LAST); chunk statements stream (base ++ toCNF c) and transfer via unsat_append_comm\n  --compact KC: leaf checks compact their clause database every KC feed blocks (lrat_stream_cnf_compact); the archived certificates MUST be pre-renumbered with lratcatch-compact-renumber (same KC and block size)\n  --base-term T: Base.lean states `base := T` (a Lean CNF term, e.g. an encoder application) instead of parseDimacs of base.cnf, which must be its printout; --import M adds the imports T needs\n  --root R: module-name root of the emitted set (default LRATCatcher.Generated; directory R with dots as slashes)"
   let relMode := args.contains "--rel"
   let args := args.filter (· != "--rel")
   let unitsLast := args.contains "--units-last"
@@ -196,6 +202,36 @@ def main (args : List String) : IO UInt32 := do
                   else die "--seg-group must be ≥ 2"
       | none => die s!"bad --seg-group '{g}'"
     | _ => pure (args, segGroupDefault)
+  -- `--base-term T`: state `base` as the Lean term `T` (e.g. an encoder
+  -- applied to its parameters) instead of `parseDimacs «base.cnf»`. The DIMACS
+  -- file must then be the printout of that term (`lratcatch-gen` prints
+  -- `CNF.dimacs`, the inverse of `parseDimacs`); a mismatch cannot yield a
+  -- false theorem — every leaf certificate is checked against the stated term —
+  -- it makes the leaf checks fail. `--import M` (repeatable) adds the imports
+  -- Base.lean needs for `T`.
+  let (args, baseTerm) ←
+    match args.span (· != "--base-term") with
+    | (pre, "--base-term" :: t :: post) =>
+      if t.trimAscii.isEmpty then die "--base-term must be a Lean term" else pure (pre ++ post, some t)
+    | (pre, []) => pure (pre, none)
+    | _ => die usage
+  let mut rest := args
+  let mut baseImports : Array String := #[]
+  repeat
+    match rest.span (· != "--import") with
+    | (pre, "--import" :: m :: post) => baseImports := baseImports.push m; rest := pre ++ post
+    | (_, []) => break
+    | _ => die usage
+  -- `--root R`: module-name root of the emitted set (default
+  -- `LRATCatcher.Generated`); the directory is `R` with `.` → `/`.
+  let (args, root) ←
+    match rest.span (· != "--root") with
+    | (pre, "--root" :: r :: post) =>
+      if r.isEmpty || !r.all (fun c => c.isAlpha || c.isDigit || c == '_' || c == '.') then
+        die s!"--root '{r}' must be a dotted Lean module name"
+      else pure (pre ++ post, r)
+    | (pre, []) => pure (pre, "LRATCatcher.Generated")
+    | _ => die usage
   let (posArgs, part) ←
     match args.span (· != "--part") with
     | (pos, ["--part", p]) =>
@@ -266,8 +302,8 @@ def main (args : List String) : IO UInt32 := do
   | _ => pure ()
   let emitShared := match part with | .range .. => false | _ => true
 
-  let modPrefix := s!"LRATCatcher.Generated.{name}"
-  let dir := s!"LRATCatcher/Generated/{name}"
+  let modPrefix := s!"{root}.{name}"
+  let dir := s!"{root.replace "." "/"}/{name}"
 
   -- streaming command emitted for each leaf: plain, or compacting (--compact)
   let streamCmd := match compactK with
@@ -301,8 +337,13 @@ def main (args : List String) : IO UInt32 := do
   -- which doubles as an end-to-end check of the chunk slicing.
   if emitShared then
     let h ← openOut s!"{dir}/Base.lean"
-    h.putStr s!"import LRATCatcher.Cover\n\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
-    h.putStr s!"def base : CNF Nat := LRATCatcher.parseDimacs \"{escLean baseStr}\"\n\n"
+    h.putStr "import LRATCatcher.Cover\n"
+    for m in baseImports do
+      h.putStr s!"import {m}\n"
+    h.putStr s!"\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
+    match baseTerm with
+    | some t => h.putStr s!"def base : CNF Nat := {t}\n\n"
+    | none => h.putStr s!"def base : CNF Nat := LRATCatcher.parseDimacs \"{escLean baseStr}\"\n\n"
     h.putStr s!"def cubes : List Cube := LRATCatcher.parseICnf \"{escLean icnfStr}\"\n\n"
     h.putStr s!"end {modPrefix}\n"
     h.flush
@@ -312,7 +353,7 @@ def main (args : List String) : IO UInt32 := do
     if part.emits j then
       let arr := chunks[j-1]!
       let h ← openOut s!"{dir}/Chunk{j}.lean"
-      h.putStr s!"import LRATCatcher.Generated.{name}.Base\nimport LRATCatcher.StreamOracle\n\n"
+      h.putStr s!"import {modPrefix}.Base\nimport LRATCatcher.StreamOracle\n\n"
       h.putStr s!"open Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
       -- this chunk's cube defs (kept out of Base — see the Base.lean comment)
       for i in arr.toList do
@@ -345,7 +386,7 @@ def main (args : List String) : IO UInt32 := do
       let m := subCubes.size
       let negsub ← readInput s!"{negsubDir}/leaf{i}_negsub.lrat"
       let h ← openOut s!"{dir}/Parent{i}.lean"
-      h.putStr s!"import LRATCatcher.Generated.{name}.Base\nimport LRATCatcher.StreamOracle\n\n"
+      h.putStr s!"import {modPrefix}.Base\nimport LRATCatcher.StreamOracle\n\n"
       h.putStr s!"open Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
       -- this parent's top cube (kept out of Base — see the Base.lean comment)
       h.putStr s!"def cube{i} : Cube := {cubeLit cubes[i-1]!}\n"
@@ -378,7 +419,7 @@ def main (args : List String) : IO UInt32 := do
     -- ============================ Cover.lean ============================
     let coverStr ← readInput coverFile
     let h ← openOut s!"{dir}/Cover.lean"
-    h.putStr s!"import LRATCatcher.Generated.{name}.Base\n\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
+    h.putStr s!"import {modPrefix}.Base\n\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
     h.putStr s!"set_option maxHeartbeats 0 in\n"
     if relMode then
       h.putStr s!"theorem coverThm : (base ++ negCubesCNF cubes).Unsat :=\n  LRATCatcher.checkLratCnf_sound _ \"{escLean coverStr}\" (by native_decide)\n\n"
@@ -389,11 +430,11 @@ def main (args : List String) : IO UInt32 := do
 
     -- ============================ Main.lean ============================
     let hm ← openOut s!"{dir}/Main.lean"
-    hm.putStr s!"import LRATCatcher.Generated.{name}.Base\nimport LRATCatcher.Generated.{name}.Cover\n"
+    hm.putStr s!"import {modPrefix}.Base\nimport {modPrefix}.Cover\n"
     for j in [1:numChunks+1] do
-      hm.putStr s!"import LRATCatcher.Generated.{name}.Chunk{j}\n"
+      hm.putStr s!"import {modPrefix}.Chunk{j}\n"
     for i in parents.toList do
-      hm.putStr s!"import LRATCatcher.Generated.{name}.Parent{i}\n"
+      hm.putStr s!"import {modPrefix}.Parent{i}\n"
     hm.putStr s!"\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n"
     -- The canonical `cubes` (Base) is PARSED from the iCNF text; the segment
     -- lists live in the chunk/parent modules. Reconnect them here: grouped

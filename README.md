@@ -236,10 +236,30 @@ to combinatorial questions, each with an `#print axioms`-checked theorem.
 - **Ramsey numbers.** `R(3,3) = 6`, via `ramsey_lrat` and a cube-and-conquer
   variant, plus a Paley-graph lower-bound witness.
 
-This repository ships the lower-bound witnesses for the larger cases
-(`R(4,4) > 17`, `S(4) ≥ 44`). The matching upper bounds, and hence the
-equalities `R(4,4) = 18` and `S(4) = 44`, follow by cube-and-conquer with the
-same encodings, whose certificates are far too large to ship here.
+- **S(4) = 44**, end to end by cube-and-conquer with streamed certificates:
+  `examples/schur4cc/` (see the next section).
+
+This repository also ships the lower-bound witness `R(4,4) > 17`. The matching
+upper bound, and hence `R(4,4) = 18`, follows by cube-and-conquer with the same
+encoding; its certificates (85 GB) are too large to ship here.
+
+## Worked example: S(4) = 44 in a few minutes
+
+`bash examples/schur4cc/run.sh` (from the package root; needs `cadical` and
+`python3`) runs the whole cube-and-conquer pipeline on one core: the Lean
+encoding `Schur.encodeK 4 45` is printed to DIMACS, split into eight cubes,
+each leaf is refuted by CaDiCaL, the eight certificates (about 280 MB) are
+checked as they stream from disk, the 118-byte cover certificate is embedded,
+and the proved lemma `cover_unsat` composes everything into
+
+```lean
+theorem S4 : schurNumber 4 44
+```
+
+stated about colourings, with one `native_decide` axiom per leaf plus one for
+the cover. `examples/schur4cc/README.md` walks through every command and
+explains what the theorem states; the generated modules are checked in under
+`LRATCatcher/Examples/Schur4CC/`.
 
 ## Tools
 
@@ -248,6 +268,11 @@ same encodings, whose certificates are far too large to ship here.
 - `lake exe lratcatch-cover-parallel base.cnf cubes.icnf leafPrefix cover.lrat Name [chunkSize] [--part …]`
   emits a parallel-buildable module set for a cube-and-conquer run (see
   [Parallel cube-and-conquer](#parallel-cube-and-conquer)).
+- `lake exe lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--base-term T --import M] [--root R] [--rel] [--units-last] [--compact KC] [--part …]`
+  emits a cube-and-conquer module set whose leaf certificates are *streamed*
+  (`lrat_stream_cnf`, one axiom per leaf; from files or FIFOs), with an
+  optional second cubing level for re-cubed leaves and an optional encoder
+  term as the base (see the worked example above).
 - `lake exe lratcatch-stream-gen (chunk|derive) base.cnf cert.lrat Name chunkLines [--delete-cert]`
   emits a chunked module set for one large certificate, or checks a
   derivation and externalizes the derived formula (see
