@@ -63,10 +63,51 @@ theorem sat_of_negClause_false {a : Nat → Bool} {c : Cube}
     exact ih h.2
 
 /-- The leaf CNF of a cube: unit clauses first, then the base
-    (the order the exported DIMACS file uses, so LRAT clause IDs match). -/
+    (the order the exported DIMACS file uses, so LRAT clause IDs match).
+
+    WARNING for hand-written pipelines: the leaf DIMACS file handed to the
+    solver must list the cube units BEFORE the base clauses, matching
+    `c.toCNF ++ base`. With the units appended last, every LRAT clause id is
+    off by `|c|` and the import simply returns `false` — not an error, and not
+    caught by a script that only re-checks its own file with an external
+    checker. -/
 def leafCNF (c : Cube) (base : CNF Nat) : CNF Nat := c.toCNF ++ base
 
 end Cube
+
+/-- Unsatisfiability is invariant under swapping the two halves of an
+    append. Used by nested cube-and-conquer imports whose inner-leaf
+    certificates were produced against `base' ++ δ.toCNF` (sub-cube units
+    appended last, as re-cubing pipelines naturally do) to transfer to
+    `Cube.leafCNF δ base' = δ.toCNF ++ base'`. -/
+theorem unsat_append_comm {F G : CNF Nat} (h : (F ++ G).Unsat) :
+    (G ++ F).Unsat := by
+  intro a
+  have := h a
+  simp only [CNF.eval_append] at this ⊢
+  rw [Bool.and_comm]
+  exact this
+
+/-- Removing clauses (e.g. tautologies, or a padding tautology) can only
+make a CNF easier to satisfy, so unsatisfiability of the filtered formula
+gives unsatisfiability of the original. Useful for stripping tautological
+clauses, or padding a base formula with a tautology `v ∨ ¬v` for an
+extension variable. -/
+theorem unsat_of_filter_unsat (F : CNF Nat) (p : CNF.Clause Nat → Bool)
+    (h : CNF.Unsat (⟨F.clauses.filter p⟩ : CNF Nat)) : F.Unsat := by
+  intro a
+  cases heval : CNF.eval a F with
+  | false => rfl
+  | true =>
+    exfalso
+    have hf := h a
+    have hfil : CNF.eval a (⟨F.clauses.filter p⟩ : CNF Nat) = true := by
+      simp only [CNF.eval] at heval ⊢
+      rw [Array.all_eq_true_iff_forall_mem] at heval ⊢
+      intro c hc
+      exact heval c (Array.mem_of_mem_filter hc)
+    rw [hf] at hfil
+    cases hfil
 
 /-! ## Cover completeness via negated cubes -/
 
@@ -95,6 +136,44 @@ theorem cover_unsat {base : CNF Nat} {cubes : List Cube}
   obtain ⟨c, hc, hsat⟩ := cover_complete hcover a
   have hl := hleaf c hc a
   simpa [Cube.leafCNF, Cube.eval_toCNF, hsat] using hl
+
+/-- Relative cover completeness: if `base ++ negCubesCNF cubes` is UNSAT, the
+    cubes cover every assignment that satisfies the base. Cube-and-conquer
+    splits produced by lookahead tools are often exhaustive only *relative to
+    the base formula* — branches already falsified by the base are pruned, so
+    the negated-cubes CNF alone is satisfiable and the cover certificate
+    refutes `base ∧ ⋀ᵢ ¬Cᵢ`, not `⋀ᵢ ¬Cᵢ`. The base comes first so the LRAT
+    clause ids of a solver run on the concatenated DIMACS file line up. -/
+theorem cover_complete_rel {base : CNF Nat} {cubes : List Cube}
+    (h : (base ++ negCubesCNF cubes).Unsat) :
+    ∀ a, CNF.eval a base = true → ∃ c ∈ cubes, c.sat a = true := by
+  intro a hbase
+  have h' := h a
+  rw [CNF.eval_append, hbase, Bool.true_and] at h'
+  simp only [negCubesCNF, CNF.eval, Array.all_eq_false', List.mem_toArray] at h'
+  obtain ⟨cl, hmem, hfalse⟩ := h'
+  obtain ⟨c, hc, rfl⟩ := List.mem_map.mp hmem
+  exact ⟨c, hc, Cube.sat_of_negClause_false (by simpa using hfalse)⟩
+
+/-- **Cube-and-conquer composition, relative cover**: like `cover_unsat`, but
+    the cover certificate refutes `base ++ negCubesCNF cubes` (cubes exhaustive
+    relative to the base) instead of the unconditional tautology. Strictly more
+    general: a certificate for `negCubesCNF cubes` alone also refutes the
+    concatenation. -/
+theorem cover_unsat_rel {base : CNF Nat} {cubes : List Cube}
+    (hleaf : ∀ c ∈ cubes, (Cube.leafCNF c base).Unsat)
+    (hcover : (base ++ negCubesCNF cubes).Unsat) :
+    base.Unsat := by
+  intro a
+  cases hb : CNF.eval a base with
+  | false => rfl
+  | true =>
+    have hfalse : CNF.eval a base = false := by
+      obtain ⟨c, hc, hsat⟩ := cover_complete_rel hcover a hb
+      have hl := hleaf c hc a
+      simpa [Cube.leafCNF, Cube.eval_toCNF, hsat] using hl
+    rw [hb] at hfalse
+    exact hfalse
 
 /-! ## Boolean checker -/
 
@@ -132,6 +211,22 @@ theorem checkCover_sound (base : CNF Nat) (cubes : List Cube) (leafCerts : List 
     base.Unsat := by
   rw [checkCover, Bool.and_eq_true] at h
   exact cover_unsat (checkLeaves_sound h.1) (checkLratCnf_sound _ _ h.2)
+
+/-- `checkCover` with a relative cover certificate: the cover LRAT refutes
+    `base ++ negCubesCNF cubes` (solve the concatenated DIMACS, base clauses
+    first). Use when the cube split is exhaustive only relative to the base. -/
+def checkCoverRel (base : CNF Nat) (cubes : List Cube) (leafCerts : List String)
+    (coverCert : String) : Bool :=
+  checkLeaves base cubes leafCerts &&
+    checkLratCnf (base ++ negCubesCNF cubes) coverCert
+
+/-- Soundness of `checkCoverRel`. -/
+theorem checkCoverRel_sound (base : CNF Nat) (cubes : List Cube)
+    (leafCerts : List String) (coverCert : String)
+    (h : checkCoverRel base cubes leafCerts coverCert = true) :
+    base.Unsat := by
+  rw [checkCoverRel, Bool.and_eq_true] at h
+  exact cover_unsat_rel (checkLeaves_sound h.1) (checkLratCnf_sound _ _ h.2)
 
 /-! ## iCNF cube files -/
 
