@@ -76,7 +76,8 @@ def readFile' (path : String) : CommandElabM String := do
 
 /-- Elaboration-time validation of DIMACS text: every nonempty line must be a
     comment (`c…`), the header (`p…`), or a clause line of integer tokens, and
-    the final integer token of the file must be `0`. Warns about empty clauses.
+    the final integer token of the file, if there is one, must be `0` (a file
+    without clauses is the empty CNF). Warns about empty clauses.
     Rejects exactly the input where `parseDimacs`' leniency could matter. -/
 def validateDimacs (path : String) (s : String) : CommandElabM Unit := do
   let mut lineNo : Nat := 0
@@ -95,7 +96,7 @@ def validateDimacs (path : String) (s : String) : CommandElabM Unit := do
       | some l => lastTok := some l
       | none =>
         throwError "{path}:{lineNo}: non-integer token '{tok.toString}' in clause line"
-  unless lastTok == some 0 do
+  unless lastTok.isNone || lastTok == some 0 do
     throwError "{path}: final clause is not terminated by 0"
   if (parseDimacs s).clauses.any (·.isEmpty) then
     logWarning m!"{path}: contains an empty clause — the CNF is trivially unsatisfiable"
