@@ -176,6 +176,14 @@ trust over native mode is exactly the small audited reader shim
 discussion). The resulting `.olean` carries the theorem but no replayable
 evidence — rebuilding re-runs the solver.
 
+**Downstream stream commands.** A project that defines its own streaming
+command should use the helpers `withStreamFeed` (stream reset, per-import
+opaque feed, reset in a `finally`) and `elabNativeStreamTheorem` (the
+synchronous, heartbeat-unlimited `native_decide` theorem) from
+`LRATCatcher/StreamOracle.lean` instead of copying the pattern.
+`lrat_stream`, `lrat_stream_cnf` and `lrat_stream_cnf_compact` are built from
+them.
+
 **Compaction (memory bounded by live clauses).** `lrat_stream_cnf_compact name
 (cnf) "path" K` and `lratcatch-cover-stream --compact K` check a stream with
 `checkStreamCnfC`, which every `K` feed blocks drops the deleted slots from

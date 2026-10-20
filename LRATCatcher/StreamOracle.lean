@@ -362,6 +362,57 @@ abbrev FeedTy := Nat → Option (Array IntAction)
 @[implemented_by certFeedImpl]
 opaque certFeed : Nat → Option (Array IntAction)
 
+/-! ## Helpers for stream commands
+
+  The plumbing shared by the stream commands below. Downstream projects that
+  define their own stream commands should use these two helpers instead of
+  copying the pattern. -/
+
+open Lean Elab Command in
+/-- `withStreamFeed path feedId k`: point the stream at `path`
+    (`streamReset (some path)`), declare the per-import opaque feed
+
+    `@[implemented_by LRATCatcher.certFeedImpl] opaque feedId : Nat → Option (Array IntAction)`
+
+    in the current namespace, run `k`, and clear the stream state
+    (`streamReset none`) in a `finally`, also when `k` throws.
+
+    The feed is per import so that the recorded `native_decide` axioms stay
+    jointly satisfiable: each opaque constant is pinned only to the blocks
+    its own run observed (see the module docstring). Use a fresh `feedId` for
+    every call. The stream can be read once per reset: `k` should elaborate
+    exactly one theorem whose check consumes `feedId` (blocks are requested
+    in order `0, 1, …`, an out-of-order request ends the stream), and any
+    pre-check that must not read the stream belongs before this call. -/
+def withStreamFeed {α : Type} (path : String) (feedId : Ident) (k : CommandElabM α) :
+    CommandElabM α := do
+  try
+    streamReset (some path)
+    elabCommand (← `(command|
+      @[implemented_by LRATCatcher.certFeedImpl]
+      opaque $feedId : Nat → Option (Array Std.Tactic.BVDecide.LRAT.IntAction)))
+    k
+  finally
+    streamReset none
+
+open Lean Elab Command in
+/-- `elabNativeStreamTheorem n type proof`: elaborate
+
+    `set_option Elab.async false in set_option maxHeartbeats 0 in theorem n : type := proof`.
+
+    `Elab.async` must be off: the feed has state (an open handle and the next
+    block index), so the check must consume it in order, on the elaborating
+    thread, while the stream is set (inside `withStreamFeed`) and its
+    producer is alive. `maxHeartbeats 0` because the check's cost scales with
+    the certificate. With `proof` containing one `by native_decide`, the
+    theorem depends on one native axiom named `n._native.native_decide.ax_1`
+    (under asynchronous elaboration Lean 4.30 names it `…ax_1_1`). -/
+def elabNativeStreamTheorem (n : Ident) (type proof : Term) : CommandElabM Unit := do
+  elabCommand (← `(command|
+    set_option Elab.async false in
+    set_option maxHeartbeats 0 in
+    theorem $n : $type := $proof))
+
 /-! ## `lrat_stream` — zero-storage import command -/
 
 open Lean Elab Command in
@@ -399,20 +450,13 @@ elab "lrat_stream " n:ident ppSpace cnfFile:str : command => do
     stdout := .null
     stderr := .null }
   try
-    streamReset (some fifo.toString)
     let cnfLit := Syntax.mkStrLit cnfStr
     let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
-    elabCommand (← `(command|
-      @[implemented_by LRATCatcher.certFeedImpl]
-      opaque $feedId : Nat → Option (Array Std.Tactic.BVDecide.LRAT.IntAction)))
-    elabCommand (← `(command|
-      set_option Elab.async false in
-      set_option maxHeartbeats 0 in
-      theorem $n : (LRATCatcher.parseDimacs $cnfLit).Unsat :=
-        LRATCatcher.checkStreamCnf_sound (LRATCatcher.parseDimacs $cnfLit)
+    withStreamFeed fifo.toString feedId do
+      elabNativeStreamTheorem n (← `((LRATCatcher.parseDimacs $cnfLit).Unsat))
+        (← `(LRATCatcher.checkStreamCnf_sound (LRATCatcher.parseDimacs $cnfLit)
           $feedId LRATCatcher.streamFuel (by native_decide)))
   finally
-    streamReset none
     try child.kill catch _ => pure ()
     let _ ← child.wait
     IO.FS.removeDirAll tmpDir
@@ -427,20 +471,11 @@ open Lean Elab Command in
     nested cover import: certificates stay compressed on disk, oleans stay
     small, and the theorem is replayable as long as the archive exists. -/
 elab "lrat_stream_cnf " n:ident ppSpace t:term:max ppSpace path:str : command => do
-  try
-    streamReset (some path.getString)
-    let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
-    elabCommand (← `(command|
-      @[implemented_by LRATCatcher.certFeedImpl]
-      opaque $feedId : Nat → Option (Array Std.Tactic.BVDecide.LRAT.IntAction)))
-    elabCommand (← `(command|
-      set_option Elab.async false in
-      set_option maxHeartbeats 0 in
-      theorem $n : ($t : Std.Sat.CNF Nat).Unsat :=
-        LRATCatcher.checkStreamCnf_sound ($t : Std.Sat.CNF Nat)
-          $feedId LRATCatcher.streamFuel (by native_decide)))
-  finally
-    streamReset none
+  let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
+  withStreamFeed path.getString feedId do
+    elabNativeStreamTheorem n (← `(($t : Std.Sat.CNF Nat).Unsat))
+      (← `(LRATCatcher.checkStreamCnf_sound ($t : Std.Sat.CNF Nat)
+        $feedId LRATCatcher.streamFuel (by native_decide)))
 
 open Lean Elab Command in
 /-- `lrat_stream_cnf_compact name (t) "path" k`: like `lrat_stream_cnf`, but
@@ -451,20 +486,11 @@ open Lean Elab Command in
     block size); a mismatch fails the check. `k` is part of the checked
     statement. -/
 elab "lrat_stream_cnf_compact " n:ident ppSpace t:term:max ppSpace path:str ppSpace k:num : command => do
-  try
-    streamReset (some path.getString)
-    let kLit := Syntax.mkNatLit k.getNat
-    let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
-    elabCommand (← `(command|
-      @[implemented_by LRATCatcher.certFeedImpl]
-      opaque $feedId : Nat → Option (Array Std.Tactic.BVDecide.LRAT.IntAction)))
-    elabCommand (← `(command|
-      set_option Elab.async false in
-      set_option maxHeartbeats 0 in
-      theorem $n : ($t : Std.Sat.CNF Nat).Unsat :=
-        LRATCatcher.checkStreamCnfC_sound ($t : Std.Sat.CNF Nat)
-          $feedId LRATCatcher.streamFuel $kLit (by native_decide)))
-  finally
-    streamReset none
+  let kLit := Syntax.mkNatLit k.getNat
+  let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
+  withStreamFeed path.getString feedId do
+    elabNativeStreamTheorem n (← `(($t : Std.Sat.CNF Nat).Unsat))
+      (← `(LRATCatcher.checkStreamCnfC_sound ($t : Std.Sat.CNF Nat)
+        $feedId LRATCatcher.streamFuel $kLit (by native_decide)))
 
 end LRATCatcher
