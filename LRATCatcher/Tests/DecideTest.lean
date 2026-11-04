@@ -1,9 +1,9 @@
 import LRATCatcher.Reflect
 
 /-!
-  `lrat_decide`: the solver is invoked at elaboration time (cadical, or
-  `LRATCATCHER_SOLVER`; `--no-factor` added for cadical ≥ 3 automatically —
-  under `lake` the toolchain-bundled cadical shadows the system one).
+  `lrat_decide`: the solver is invoked at elaboration time (the CaDiCaL
+  bundled with the Lean toolchain, or `LRATCATCHER_SOLVER`; `--no-factor`
+  added for cadical ≥ 3 automatically).
   Instance: the R(3,3) ≤ 6 encoding (instant). Native mode carries the
   per-theorem `native_decide` axiom; kernel mode standard axioms only.
 -/

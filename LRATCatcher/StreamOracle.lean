@@ -421,9 +421,8 @@ open Lean Elab Command in
     bytes ever reach the disk. Registers
     `name : (LRATCatcher.parseDimacs «cnf contents»).Unsat`.
 
-    The solver defaults to `cadical` (override with `LRATCATCHER_SOLVER`);
-    flags as in `lrat_decide`. Rebuilds re-run the solver — the olean carries
-    the theorem but no replayable evidence (ephemeral import; see the module
+    The solver and flags are chosen by `solverAndFlags`, as in
+    `lrat_decide`. Rebuilds re-run the solver — the olean carries the theorem but no replayable evidence (ephemeral import; see the module
     docstring). On a satisfiable input the feed ends without the empty
     clause, so `native_decide` reports the check evaluating to `false` (the
     solver exits with code 10). `Elab.async` is disabled for the emitted
@@ -435,14 +434,9 @@ elab "lrat_stream " n:ident ppSpace cnfFile:str : command => do
   let mkOut ← IO.Process.output { cmd := "mkfifo", args := #[fifo.toString] }
   if mkOut.exitCode != 0 then
     throwError "lrat_stream: mkfifo failed: {mkOut.stderr}"
-  let solver := (← IO.getEnv "LRATCATCHER_SOLVER").getD "cadical"
-  let verOut ← IO.Process.output { cmd := solver, args := #["--version"] }
-  let ver := verOut.stdout.trimAscii.toString
   -- binary LRAT (the solver default) is fine here: the feed auto-detects it,
   -- and the FIFO carries 2-3x fewer bytes than with --no-binary
-  let mut flags := #["--lrat"]
-  if (ver.takeWhile (· != '.')).toNat?.all (· ≥ 3) then
-    flags := flags.push "--no-factor"
+  let (solver, ver, flags) ← solverAndFlags
   logInfo m!"lrat_stream: {solver} {ver}, streaming (zero-storage)"
   let child ← IO.Process.spawn {
     cmd := solver

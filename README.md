@@ -23,17 +23,20 @@ There is no Mathlib dependency.
   toolchain on first build.
 - **A SAT solver**, needed by the commands that run the solver at build time
   (`lrat_decide`, `lrat_stream`; for example `DecideTest`, `LeafBench`,
-  `StreamCmdTest`) and by the worked example `examples/schur4cc/run.sh`.
-  [CaDiCaL](https://github.com/arminbiere/cadical) 3.0.0 is the default
-  (`brew install cadical`, or build from source). Every other command,
-  including the showcase tests, replays an existing `.lrat` file and needs no
-  solver.
+  `StreamCmdTest`). By default these use the
+  [CaDiCaL](https://github.com/arminbiere/cadical) binary that ships with the
+  Lean toolchain (the one `bv_decide` uses), so nothing needs installing. Set
+  `LRATCATCHER_SOLVER` to the path of another solver binary to use it instead.
+  The worked example `examples/schur4cc/run.sh` calls a system `cadical` 3.x.
+  Every other command, including the showcase tests, replays an existing
+  `.lrat` file and needs no solver.
 
-Generate certificates with `cadical --lrat --no-binary --no-factor`. The
-`--no-factor` flag is required for CaDiCaL 3 and later: factoring introduces
-extension variables that the core checker soundly rejects. Set `LRATCATCHER_SOLVER`
-to use a different solver binary; give an absolute path to pin one, since under
-`lake` a toolchain-bundled `cadical` can shadow the system one on `PATH`.
+The core LRAT checker does not support bounded variable addition (BVA), which
+CaDiCaL 3 performs as "factoring": it introduces extension variables, and
+certificates that use them are soundly rejected. With CaDiCaL 3 and later,
+generate certificates with `cadical --lrat --no-binary --no-factor`;
+`lrat_decide` and `lrat_stream` add `--no-factor` automatically. The bundled
+CaDiCaL (2.x) does not factor.
 
 ## Build
 

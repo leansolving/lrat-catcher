@@ -192,21 +192,34 @@ elab "lrat_reflect_cnf " "+" noWs &"kernel" ppSpace n:ident ppSpace "(" cnfTerm:
 
 /-! ## Solver invocation (`lrat_decide`) -/
 
-/-- Run the SAT solver on `cnfPath` at elaboration time, writing an LRAT
-    certificate to `lratPath`. Expects UNSAT (exit code 20). The solver
-    defaults to `cadical` and can be overridden with the `LRATCATCHER_SOLVER`
-    environment variable. Flags are `--lrat --no-binary`, plus `--no-factor`
-    for cadical ≥ 3 (factoring introduces extension variables whose
-    certificates the core checker soundly rejects; older versions do not
-    factor and lack the flag). Beware: under `lake`, plain `cadical`
-    resolves to the version bundled with the Lean toolchain. -/
-def runSolver (cnfPath lratPath : String) : CommandElabM Unit := do
-  let solver := (← IO.getEnv "LRATCATCHER_SOLVER").getD "cadical"
+/-- The SAT solver for `lrat_decide` and `lrat_stream`, resolved as
+    `bv_decide` does: the `LRATCATCHER_SOLVER` environment variable if set
+    and nonempty, else the CaDiCaL binary bundled with the Lean toolchain
+    (next to the running executable), else `cadical` on `PATH`. Returns the solver and
+    its flags: `--lrat`, plus `--no-factor` for cadical ≥ 3, whose factoring
+    (bounded variable addition) introduces extension variables that the core
+    checker soundly rejects; older versions, including the bundled one, do
+    not factor and lack the flag. -/
+def solverAndFlags : IO (String × String × Array String) := do
+  let solver ← match (← IO.getEnv "LRATCATCHER_SOLVER").filter (· ≠ "") with
+    | some s => pure s
+    | none =>
+      let bundled := (← IO.appPath).parent.get! / "cadical"
+        |>.withExtension System.FilePath.exeExtension
+      pure (if ← bundled.pathExists then bundled.toString else "cadical")
   let verOut ← IO.Process.output { cmd := solver, args := #["--version"] }
   let ver := verOut.stdout.trimAscii.toString
-  let mut flags := #["--lrat", "--no-binary"]
+  let mut flags := #["--lrat"]
   if (ver.takeWhile (· != '.')).toNat?.all (· ≥ 3) then
     flags := flags.push "--no-factor"
+  return (solver, ver, flags)
+
+/-- Run the SAT solver (see `solverAndFlags`) on `cnfPath` at elaboration
+    time, writing an ASCII LRAT certificate to `lratPath`. Expects UNSAT
+    (exit code 20). -/
+def runSolver (cnfPath lratPath : String) : CommandElabM Unit := do
+  let (solver, ver, flags) ← solverAndFlags
+  let flags := flags.push "--no-binary"
   logInfo m!"lrat_decide: {solver} {ver}"
   let out ← IO.Process.output {
     cmd := solver
