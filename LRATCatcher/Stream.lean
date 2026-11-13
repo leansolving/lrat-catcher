@@ -322,7 +322,7 @@ private theorem restoreList_serialize_eq {n : Nat} (f : DefaultFormula n) :
   simp only [serialize, Array.toList_map]
   exact restoreList_serialize f.clauses.toList
 
-private theorem restoreD_serialize {n : Nat} (f : DefaultFormula n) :
+theorem restoreD_serialize {n : Nat} (f : DefaultFormula n) :
     restoreD n (serialize f) = (Formula.ofArray f.clauses : DefaultFormula n) := by
   simp [restoreD, restoreList_serialize_eq]
 
