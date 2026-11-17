@@ -1,5 +1,6 @@
 import LRATCatcher.Basic
-import LRATCatcher.Kernel
+-- PORT (v4.36.0): kernel mode disabled until the list-based kernel checker exists
+-- import LRATCatcher.Kernel
 import Std.Tactic.BVDecide.LRAT
 import Lean
 
@@ -98,7 +99,7 @@ def validateDimacs (path : String) (s : String) : CommandElabM Unit := do
         throwError "{path}:{lineNo}: non-integer token '{tok.toString}' in clause line"
   unless lastTok.isNone || lastTok == some 0 do
     throwError "{path}: final clause is not terminated by 0"
-  if (parseDimacs s).clauses.any (·.isEmpty) then
+  if (parseDimacs s).clauses.any (·.size == 0) then
     logWarning m!"{path}: contains an empty clause — the CNF is trivially unsatisfiable"
 
 /-! ## Quoting pre-parsed LRAT actions (kernel mode)
@@ -139,6 +140,7 @@ def loadLrat (cmdName : String) (lratFile : TSyntax `str) :
     throwError "{cmdName}: LRAT parse error in '{lratFile.getString}': {e}"
   | .ok proof => return (lratStr, proof)
 
+/- PORT (v4.36.0): kernel mode disabled until the list-based kernel checker exists.
 /-- Emit the kernel-mode theorem `name : cnfTerm.Unsat` with the pre-parsed
     certificate embedded as a `List IntAction` literal. -/
 def emitKernelTheorem (n : Ident) (cnfT : Term) (proof : Array IntAction) :
@@ -149,6 +151,7 @@ def emitKernelTheorem (n : Ident) (cnfT : Term) (proof : Array IntAction) :
     set_option maxHeartbeats 0 in
     theorem $n : Std.Sat.CNF.Unsat ($cnfT : Std.Sat.CNF Nat) :=
       LRATCatcher.checkKernel_sound $cnfT $actions (by decide +kernel)))
+-/
 
 /-- `lrat_reflect name "f.cnf" "f.lrat"`: import a DIMACS CNF + LRAT certificate
     as `name : (LRATCatcher.parseDimacs «cnf contents»).Unsat`. -/
@@ -161,6 +164,7 @@ elab "lrat_reflect " n:ident ppSpace cnfFile:str ppSpace lratFile:str : command 
     theorem $n : (LRATCatcher.parseDimacs $cnfLit).Unsat :=
       LRATCatcher.checkLrat_sound $cnfLit $lratLit (by native_decide)))
 
+/- PORT (v4.36.0): kernel mode disabled.
 /-- `lrat_reflect +kernel name "f.cnf" "f.lrat"`: as `lrat_reflect`, but the
     check runs inside the Lean kernel (no compiler trust). The kernel cannot
     evaluate the string parser, so the statement is
@@ -172,6 +176,7 @@ elab "lrat_reflect " "+" noWs &"kernel" ppSpace n:ident ppSpace cnfFile:str ppSp
   let (_, proof) ← loadLrat "lrat_reflect" lratFile
   let cnfT : Term := Syntax.mkCApp ``Std.Sat.CNF.mk #[quote (parseDimacs cnfStr).clauses]
   emitKernelTheorem n cnfT proof
+-/
 
 /-- `lrat_reflect_cnf name (cnfTerm) "f.lrat"`: certify a Lean-defined
     `CNF Nat` as UNSAT via an LRAT certificate: `name : cnfTerm.Unsat`. -/
@@ -182,6 +187,7 @@ elab "lrat_reflect_cnf " n:ident ppSpace "(" cnfTerm:term ")" ppSpace lratFile:s
     theorem $n : Std.Sat.CNF.Unsat ($cnfTerm : Std.Sat.CNF Nat) :=
       LRATCatcher.checkLratCnf_sound $cnfTerm $lratLit (by native_decide)))
 
+/- PORT (v4.36.0): kernel mode disabled.
 /-- `lrat_reflect_cnf +kernel name (cnfTerm) "f.lrat"`: as `lrat_reflect_cnf`,
     but the Boolean check is evaluated by the Lean kernel (`decide +kernel`
     on `LRATCatcher.checkKernel`) instead of the compiled evaluator — slower,
@@ -189,6 +195,7 @@ elab "lrat_reflect_cnf " n:ident ppSpace "(" cnfTerm:term ")" ppSpace lratFile:s
 elab "lrat_reflect_cnf " "+" noWs &"kernel" ppSpace n:ident ppSpace "(" cnfTerm:term ")" ppSpace lratFile:str : command => do
   let (_, proof) ← loadLrat "lrat_reflect_cnf" lratFile
   emitKernelTheorem n cnfTerm proof
+-/
 
 /-! ## Solver invocation (`lrat_decide`) -/
 
@@ -251,6 +258,7 @@ elab "lrat_decide " n:ident ppSpace cnfFile:str : command => do
   finally
     IO.FS.removeDirAll tmpDir
 
+/- PORT (v4.36.0): kernel mode disabled.
 /-- `lrat_decide +kernel name "f.cnf"`: as `lrat_decide`, but kernel-mode
     (statement embeds the CNF literal; `decide +kernel`, no compiler trust). -/
 elab "lrat_decide " "+" noWs &"kernel" ppSpace n:ident ppSpace cnfFile:str : command => do
@@ -267,5 +275,6 @@ elab "lrat_decide " "+" noWs &"kernel" ppSpace n:ident ppSpace cnfFile:str : com
       emitKernelTheorem n cnfT proof
   finally
     IO.FS.removeDirAll tmpDir
+-/
 
 end LRATCatcher

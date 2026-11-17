@@ -36,7 +36,7 @@ def dimacsLit (l : Int) : Nat × Bool := (l.natAbs - 1, decide (0 < l))
 /-- Parse a DIMACS CNF string; see the module docstring for the exact rule. -/
 def parseDimacs (s : String) : CNF Nat := Id.run do
   let mut clauses : Array (CNF.Clause Nat) := #[]
-  let mut cur : CNF.Clause Nat := []
+  let mut cur : List (Literal Nat) := []
   for line in s.splitOn "\n" do
     let t := line.trimAscii.toString
     if t.isEmpty then
@@ -47,13 +47,13 @@ def parseDimacs (s : String) : CNF Nat := Id.run do
     for tok in t.split (fun ch => ch == ' ' || ch == '\t') do
       match tok.toInt? with
       | some 0 =>
-        clauses := clauses.push cur.reverse
+        clauses := clauses.push (CNF.Clause.ofLiterals cur.reverse)
         cur := []
       | some l => cur := dimacsLit l :: cur
       | none => pure ()
   -- tolerate a missing final 0
   if !cur.isEmpty then
-    clauses := clauses.push cur.reverse
+    clauses := clauses.push (CNF.Clause.ofLiterals cur.reverse)
   return { clauses }
 
 /-- Runtime round-trip self-check: printing with `Std.Sat.CNF.dimacs` and
