@@ -49,52 +49,45 @@ namespace LRATCatcher
 /-- Pull action blocks `feed i, feed (i+1), …` and check them against the
     running clause database until one refutes; `false` on fuel exhaustion,
     stream end, or a failed check. -/
-def checkStream {n : Nat} (feed : Nat → Option (Array IntAction)) :
-    DefaultFormula n → Nat → Nat → Bool
+def checkStream (feed : Nat → Option (Array IntAction)) : State → Nat → Nat → Bool
   | _, 0, _ => false
-  | f, fuel + 1, i =>
+  | s, fuel + 1, i =>
     match feed i with
     | none => false
     | some chunk =>
-      match runChunk f chunk 0 with
+      match runChunk s chunk 0 with
       | some .refuted => true
-      | some (.more f') => checkStream feed f' fuel (i + 1)
+      | some (.more s') => checkStream feed s' fuel (i + 1)
       | none => false
 
 /-- Soundness for *every* feed and fuel — an ordinary theorem; the feed being
     an unknowable oracle costs nothing here. -/
-theorem checkStream_sound {n : Nat} (feed : Nat → Option (Array IntAction)) (fuel : Nat) :
-    ∀ (f : DefaultFormula n) (i : Nat),
-      Formula.ReadyForRupAdd f → Formula.ReadyForRatAdd f →
-      checkStream feed f fuel i = true → Unsatisfiable (PosFin n) f := by
+theorem checkStream_sound (feed : Nat → Option (Array IntAction)) (fuel : Nat) :
+    ∀ (s : State) (i : Nat), checkStream feed s fuel i = true → s.toCNF.Unsat := by
   induction fuel with
-  | zero => intro f i _ _ h; simp [checkStream] at h
+  | zero => intro s i h; simp [checkStream] at h
   | succ fuel ih =>
-    intro f i h1 h2 h
+    intro s i h
     rw [checkStream] at h
     cases hfeed : feed i with
     | none => simp [hfeed] at h
     | some chunk =>
       simp only [hfeed] at h
-      cases hrun : runChunk f chunk 0 with
+      cases hrun : runChunk s chunk 0 with
       | none => simp [hrun] at h
       | some out =>
         simp only [hrun] at h
         cases out with
-        | refuted => exact runChunk_refuted_sound f chunk 0 h1 h2 hrun
-        | more f' =>
-          obtain ⟨r1, r2, himp⟩ := runChunk_more_sound f chunk 0 h1 h2 hrun
-          exact himp (ih f' (i + 1) r1 r2 h)
+        | refuted => exact runChunk_refuted_sound hrun
+        | more s' => exact runChunk_more_sound hrun (ih s' (i + 1) h)
 
 /-- Streaming check of a `CNF Nat` (entry point used by commands/tests). -/
 def checkStreamCnf (cnf : CNF Nat) (feed : Nat → Option (Array IntAction)) (fuel : Nat) : Bool :=
-  checkStream feed (CNF.convertLRAT cnf) fuel 0
+  checkStream feed (.ofCNF cnf) fuel 0
 
 theorem checkStreamCnf_sound (cnf : CNF Nat) (feed : Nat → Option (Array IntAction))
-    (fuel : Nat) (h : checkStreamCnf cnf feed fuel = true) : cnf.Unsat :=
-  CNF.unsat_of_convertLRAT_unsat cnf
-    (checkStream_sound feed fuel (CNF.convertLRAT cnf) 0
-      (CNF.convertLRAT_readyForRupAdd cnf) (CNF.convertLRAT_readyForRatAdd cnf) h)
+    (fuel : Nat) (h : checkStreamCnf cnf feed fuel = true) : cnf.Unsat := by
+  simpa using checkStream_sound feed fuel (.ofCNF cnf) 0 h
 
 /-! ## Compacting streaming check
 
@@ -102,8 +95,8 @@ The clause array of a long run keeps one slot per clause id ever allocated
 (deletion only sets slots to `none`), so monolithic RSS grows with the id
 space even though almost every clause is deleted. `checkStreamC` compacts the
 state every `k` feed blocks: serialize, drop the holes (`compactSnapshot`),
-restore. The model set is preserved exactly
-(`liff_restoreD_compactSnapshot_serialize`), so soundness composes as before.
+restore. The clause list is preserved exactly
+(`toCNF_restoreD_compactSnapshot_serialize`), so soundness composes as before.
 The feed must supply ids and hints renumbered to the compacted positions —
 untrusted data preparation (`lratcatch-compact-renumber` for files/archives):
 a wrong renumbering fails the check, never succeeds. -/
@@ -111,79 +104,61 @@ a wrong renumbering fails the check, never succeeds. -/
 /-- The state handed to the next block: compacted when `k` divides `i` (the
     1-based count of blocks processed so far), unchanged otherwise. `k = 0`
     never compacts. -/
-def compactEvery (k i : Nat) {n : Nat} (f : DefaultFormula n) : DefaultFormula n :=
-  if k != 0 && i % k == 0 then restoreD n (compactSnapshot (serialize f)) else f
+def compactEvery (k i : Nat) (s : State) : State :=
+  if k != 0 && i % k == 0 then restoreD (compactSnapshot (serialize s)) else s
 
-theorem compactEvery_ready {n : Nat} (k i : Nat) {f : DefaultFormula n}
-    (h1 : Formula.ReadyForRupAdd f) (h2 : Formula.ReadyForRatAdd f) :
-    Formula.ReadyForRupAdd (compactEvery k i f) ∧
-      Formula.ReadyForRatAdd (compactEvery k i f) := by
+theorem toCNF_compactEvery (k i : Nat) (s : State) :
+    (compactEvery k i s).toCNF = s.toCNF := by
   unfold compactEvery
   split
-  · exact restoreD_ready _
-  · exact ⟨h1, h2⟩
-
-theorem compactEvery_unsat {n : Nat} (k i : Nat) {f : DefaultFormula n}
-    (hu1 : f.rupUnits = #[]) (hu2 : f.ratUnits = #[])
-    (h : Unsatisfiable (PosFin n) (compactEvery k i f)) :
-    Unsatisfiable (PosFin n) f := by
-  unfold compactEvery at h
-  split at h
-  · exact (liff_unsat _ _ (liff_restoreD_compactSnapshot_serialize f hu1 hu2)).mp h
-  · exact h
+  · exact toCNF_restoreD_compactSnapshot_serialize s
+  · rfl
 
 /-- Like `checkStream`, but every `k` blocks the clause database is compacted
     (holes dropped, live clauses shifted down). `k = 0` never compacts. -/
-def checkStreamC {n : Nat} (feed : Nat → Option (Array IntAction)) (k : Nat) :
-    DefaultFormula n → Nat → Nat → Bool
+def checkStreamC (feed : Nat → Option (Array IntAction)) (k : Nat) :
+    State → Nat → Nat → Bool
   | _, 0, _ => false
-  | f, fuel + 1, i =>
+  | s, fuel + 1, i =>
     match feed i with
     | none => false
     | some chunk =>
-      match runChunk f chunk 0 with
+      match runChunk s chunk 0 with
       | some .refuted => true
-      | some (.more f') => checkStreamC feed k (compactEvery k (i + 1) f') fuel (i + 1)
+      | some (.more s') => checkStreamC feed k (compactEvery k (i + 1) s') fuel (i + 1)
       | none => false
 
-theorem checkStreamC_sound {n : Nat} (feed : Nat → Option (Array IntAction)) (k : Nat)
-    (fuel : Nat) :
-    ∀ (f : DefaultFormula n) (i : Nat),
-      Formula.ReadyForRupAdd f → Formula.ReadyForRatAdd f →
-      checkStreamC feed k f fuel i = true → Unsatisfiable (PosFin n) f := by
+theorem checkStreamC_sound (feed : Nat → Option (Array IntAction)) (k : Nat) (fuel : Nat) :
+    ∀ (s : State) (i : Nat), checkStreamC feed k s fuel i = true → s.toCNF.Unsat := by
   induction fuel with
-  | zero => intro f i _ _ h; simp [checkStreamC] at h
+  | zero => intro s i h; simp [checkStreamC] at h
   | succ fuel ih =>
-    intro f i h1 h2 h
+    intro s i h
     rw [checkStreamC] at h
     cases hfeed : feed i with
     | none => simp [hfeed] at h
     | some chunk =>
       simp only [hfeed] at h
-      cases hrun : runChunk f chunk 0 with
+      cases hrun : runChunk s chunk 0 with
       | none => simp [hrun] at h
       | some out =>
         simp only [hrun] at h
         cases out with
-        | refuted => exact runChunk_refuted_sound f chunk 0 h1 h2 hrun
-        | more f' =>
-          obtain ⟨r1, r2, himp⟩ := runChunk_more_sound f chunk 0 h1 h2 hrun
-          obtain ⟨hu1, hu2⟩ := units_empty_of_ready r1 r2
-          obtain ⟨c1, c2⟩ := compactEvery_ready k (i + 1) r1 r2
-          exact himp (compactEvery_unsat k (i + 1) hu1 hu2
-            (ih (compactEvery k (i + 1) f') (i + 1) c1 c2 h))
+        | refuted => exact runChunk_refuted_sound hrun
+        | more s' =>
+          have hu := ih (compactEvery k (i + 1) s') (i + 1) h
+          rw [toCNF_compactEvery] at hu
+          exact runChunk_more_sound hrun hu
 
 /-- Compacting streaming check of a `CNF Nat`. `k` (blocks between
     compactions) is part of the checked statement. -/
 def checkStreamCnfC (cnf : CNF Nat) (feed : Nat → Option (Array IntAction))
     (fuel k : Nat) : Bool :=
-  checkStreamC feed k (CNF.convertLRAT cnf) fuel 0
+  checkStreamC feed k (.ofCNF cnf) fuel 0
 
 theorem checkStreamCnfC_sound (cnf : CNF Nat) (feed : Nat → Option (Array IntAction))
-    (fuel k : Nat) (h : checkStreamCnfC cnf feed fuel k = true) : cnf.Unsat :=
-  CNF.unsat_of_convertLRAT_unsat cnf
-    (checkStreamC_sound feed k fuel (CNF.convertLRAT cnf) 0
-      (CNF.convertLRAT_readyForRupAdd cnf) (CNF.convertLRAT_readyForRatAdd cnf) h)
+    (fuel k : Nat) (h : checkStreamCnfC cnf feed fuel k = true) : cnf.Unsat := by
+  simpa using checkStreamC_sound feed k fuel (.ofCNF cnf) 0 h
 
 /-- Fuel for streamed checks: an upper bound on the number of feed blocks
     (2²⁴ blocks of 4096 lines ≈ 7·10¹⁰ certificate lines). Fuel is only a

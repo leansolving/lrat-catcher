@@ -27,9 +27,9 @@ namespace LRATCatcher
 
 /-- **Feed irrelevance outside the window.** `checkStream feed f fuel i`
     depends on `feed` only at the indices `i, i+1, …, i+fuel-1`. -/
-theorem checkStream_feed_agree {n : Nat} (feed feed' : Nat → Option (Array IntAction))
+theorem checkStream_feed_agree (feed feed' : Nat → Option (Array IntAction))
     (fuel : Nat) :
-    ∀ (f : DefaultFormula n) (i : Nat),
+    ∀ (f : State) (i : Nat),
       (∀ k, i ≤ k → k < i + fuel → feed k = feed' k) →
       checkStream feed f fuel i = checkStream feed' f fuel i := by
   induction fuel with
@@ -58,7 +58,7 @@ theorem checkStreamCnf_feed_agree (cnf : CNF Nat)
     (feed feed' : Nat → Option (Array IntAction)) (fuel : Nat)
     (h : ∀ k, k < fuel → feed k = feed' k) :
     checkStreamCnf cnf feed fuel = checkStreamCnf cnf feed' fuel :=
-  checkStream_feed_agree feed feed' fuel (CNF.convertLRAT cnf) 0
+  checkStream_feed_agree feed feed' fuel (.ofCNF cnf) 0
     (fun k _ hk => h k (by omega))
 
 /-- **The corollary the paper argument uses.** If a streamed import accepts
@@ -77,9 +77,9 @@ theorem checkStreamCnf_true_of_agree (cnf : CNF Nat)
 /-- Feed irrelevance for the compacting variant: compaction rewrites the
     state between blocks but never consults the feed, so the window is the
     same `[i, i + fuel)`. -/
-theorem checkStreamC_feed_agree {n : Nat} (feed feed' : Nat → Option (Array IntAction))
+theorem checkStreamC_feed_agree (feed feed' : Nat → Option (Array IntAction))
     (k : Nat) (fuel : Nat) :
-    ∀ (f : DefaultFormula n) (i : Nat),
+    ∀ (f : State) (i : Nat),
       (∀ j, i ≤ j → j < i + fuel → feed j = feed' j) →
       checkStreamC feed k f fuel i = checkStreamC feed' k f fuel i := by
   induction fuel with
@@ -107,7 +107,7 @@ theorem checkStreamCnfC_feed_agree (cnf : CNF Nat)
     (feed feed' : Nat → Option (Array IntAction)) (fuel k : Nat)
     (h : ∀ j, j < fuel → feed j = feed' j) :
     checkStreamCnfC cnf feed fuel k = checkStreamCnfC cnf feed' fuel k :=
-  checkStreamC_feed_agree feed feed' k fuel (CNF.convertLRAT cnf) 0
+  checkStreamC_feed_agree feed feed' k fuel (.ofCNF cnf) 0
     (fun j _ hj => h j (by omega))
 
 theorem checkStreamCnfC_true_of_agree (cnf : CNF Nat)
