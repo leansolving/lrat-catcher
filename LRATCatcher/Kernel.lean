@@ -6,26 +6,25 @@ import Std.Tactic.BVDecide.LRAT
 
   A variant of the LRAT check whose Boolean evaluation reduces inside the
   Lean *kernel* (`decide +kernel`), so the compiled evaluator (`native_decide`)
-  is not part of the trust base. Soundness is inherited from the verified
-  checker in Lean core (`lratCheckerSound`).
+  is not part of the trust base.
 
-  The core checker as shipped does not kernel-reduce; four constructs block
-  whnf in the kernel and are replaced here by kernel-reducible equivalents:
+  The checker works on the clause database of the core checker
+  (`Std.Tactic.BVDecide.LRAT.Internal.State`) and reuses its public pieces
+  that reduce in the kernel: `State.add`, `State.deleteMany`, `State.get?`,
+  `State.toCNF` and their lemmas. The core RUP and RAT checks do not reduce in
+  the kernel: their partial assignment is a `Std.HashMap`, whose `USize`
+  indexing depends on the platform word size, which the kernel cannot
+  evaluate; the RAT exhaustiveness check also uses a `Std.HashSet`. They are
+  replaced here by checks over a list assignment (`KAssign`), with their own
+  soundness proofs against the core CNF lemmas
+  (`CNF.entails_clause_of_forall_sat`, `CNF.exists_sat_add_of_rat`, the
+  entailment glue). Everything that runs in the kernel recurses structurally
+  on lists; well-founded recursion (`Array.map`, index loops) is avoided.
 
-  * `compactLratChecker` recurses by counting an index *up*, i.e. well-founded
-    recursion (`Acc.rec` is opaque to kernel reduction) → use the structurally
-    recursive `lratChecker` from Lean core instead;
-  * `DefaultClause.ofArray` builds clauses through `Std.HashMap` (USize
-    hashing is platform-opaque) → `mkClauseK` below, with decidable
-    duplicate/tautology checks;
-  * `CNF.relabelFin` branches on a classically-decided existential →
-    `liftK` below targets `numLiterals + 2`, which always has a fallback
-    element, so no nonemptiness case split is needed;
-  * `Array.map` / `Array.mapM` / `Array.filter` / `Array.range` are
-    well-founded recursions (only `Array.foldl`, `push`, `modify`, `set!`,
-    `getElem` reduce) → all wrappers below stay on `List`; the one use inside
-    the core checker's RAT path (`ratHintsExhaustive`) is cloned as
-    `ratHintsExhaustiveK` and proved equal, so RAT steps work in kernel mode.
+  Acceptance follows `Std.Tactic.BVDecide.LRAT.check`: a clause id is its
+  position (id `i` is slot `i - 1`), unknown or deleted hint ids fail, a RAT
+  action whose pivot is not in its clause fails, and RAT hint groups must cover
+  every live clause containing the negated pivot.
 
   Statements are about a Lean-defined `CNF Nat` term (the `lrat_reflect_cnf`
   form); `parseDimacs` itself does not kernel-reduce (byte-string slice
@@ -37,256 +36,400 @@ open Std.Tactic.BVDecide.LRAT.Internal
 
 namespace LRATCatcher
 
-/-! ## Kernel-reducible clause construction -/
+/-! ## List assignment and unit propagation -/
 
-private theorem nodupkey_of_no_compl {n : Nat} {ls : List (Literal (PosFin n))}
-    (h : ∀ l ∈ ls, (l.1, !l.2) ∉ ls) :
-    ∀ l : PosFin n, (l, true) ∉ ls ∨ (l, false) ∉ ls := by
-  intro l
-  by_cases h1 : (l, true) ∈ ls
-  · exact Or.inr (h (l, true) h1)
-  · exact Or.inl h1
+/-- Partial assignment of the kernel checker: the literals assumed true. -/
+abbrev KAssign := List (Literal Nat)
 
-/-- Kernel-reducible replacement for `DefaultClause.ofArray`: deduplicate,
-    then reject tautologies. The decidable side conditions provide the
-    `DefaultClause` invariants directly. -/
-def mkClauseK {n : Nat} (ls : List (Literal (PosFin n))) : Option (DefaultClause n) :=
-  if h : ls.eraseDups.Nodup ∧ ∀ l ∈ ls.eraseDups, (l.1, !l.2) ∉ ls.eraseDups then
-    some ⟨ls.eraseDups, nodupkey_of_no_compl h.2, h.1⟩
-  else
-    none
+/-- `a` agrees with every literal of `α`. -/
+def KHolds (a : Nat → Bool) (α : KAssign) : Prop := ∀ l ∈ α, a l.1 = l.2
 
-theorem mkClauseK_clause {n : Nat} {ls : List (Literal (PosFin n))} {c : DefaultClause n}
-    (h : mkClauseK ls = some c) : c.clause = ls.eraseDups := by
-  simp only [mkClauseK] at h
-  split at h
-  · cases h; rfl
-  · simp at h
+/-- Result of unit propagation: a conflict, an extended assignment, or a
+    failed hint (not unit, unknown id). -/
+inductive KProp where
+  | conflict
+  | extended (α : KAssign)
+  | error
 
-/-- Kernel-reducible replacement for `intActionToDefaultClauseAction`
-    (which uses `Array.mapM` and the HashMap-based `Clause.ofArray`). -/
-def intActionToDCAK (n : Nat) : IntAction → Option (DefaultClauseAction n)
-  | .addEmpty cId rupHints => some <| .addEmpty cId rupHints
-  | .addRup cId c rupHints => do
-    let c ← c.toList.mapM intToLiteral
-    let c ← mkClauseK c
-    return .addRup cId c rupHints
-  | .addRat cId c pivot rupHints ratHints => do
-    let pivot ← natLiteralToPosFinLiteral pivot
-    let c ← c.toList.mapM intToLiteral
-    let c ← mkClauseK c
-    return .addRat cId c pivot rupHints ratHints
-  | .del ids => return .del ids
+/-- What a propagation result guarantees for a total assignment `a` that
+    satisfies the formula and the starting assignment. -/
+def KProp.Sound (a : Nat → Bool) : KProp → Prop
+  | .conflict => False
+  | .extended α => KHolds a α
+  | .error => True
 
-/-! ## Kernel-reducible CNF conversion -/
+/-- Propagate one hint clause: its literals not falsified by `α` must be
+    none (conflict) or copies of one literal (which becomes true). -/
+def unitOfK (α : KAssign) (lits : List (Literal Nat)) : KProp :=
+  match lits.filter (fun l => !α.contains (l.1, !l.2)) with
+  | [] => .conflict
+  | l :: rest => if rest.all (· == l) then .extended (l :: α) else .error
 
-/-- The relabeling function underlying `liftK`. -/
-def liftFun (cnf : CNF Nat) (v : Nat) : PosFin (cnf.numLiterals + 2) :=
-  if h : v < cnf.numLiterals then ⟨v + 1, by omega⟩
-  else ⟨cnf.numLiterals + 1, by omega⟩
+/-- Propagate the hint clauses `hints` (clause ids) in order. -/
+def propagateK (s : State) : KAssign → List Nat → KProp
+  | α, [] => .extended α
+  | α, h :: hs =>
+    match s.get? h with
+    | none => .error
+    | some c =>
+      match unitOfK α c.literals with
+      | .conflict => .conflict
+      | .extended α' => propagateK s α' hs
+      | .error => .error
 
-/-- Kernel-reducible replacement for `CNF.lift`: shifts variables by 1 into
-    `PosFin (numLiterals + 2)`. Targeting `numLiterals + 2` (instead of `+ 1`)
-    guarantees the fallback element `numLiterals + 1` exists, avoiding
-    `relabelFin`'s classically-decided nonemptiness existential. -/
-def liftK (cnf : CNF Nat) : CNF (PosFin (cnf.numLiterals + 2)) :=
-  ⟨(cnf.clauses.toList.map (CNF.Clause.relabel (liftFun cnf))).toArray⟩
+/-- The assignment falsifying every literal of `lits`. -/
+def negLitsK (lits : List (Literal Nat)) : KAssign := lits.map fun l => (l.1, !l.2)
 
-theorem liftK_eq (cnf : CNF Nat) : liftK cnf = CNF.relabel (liftFun cnf) cnf := by
-  simp only [liftK, CNF.relabel]
-  rw [← Array.toList_map, Array.toArray_toList]
+/-- `lits` contains a literal together with its negation. -/
+def isTautK (lits : List (Literal Nat)) : Bool := lits.any fun l => lits.contains (l.1, !l.2)
 
-theorem unsat_of_liftK_unsat (cnf : CNF Nat) : (liftK cnf).Unsat → cnf.Unsat := by
-  rw [liftK_eq]
-  intro h
-  apply (CNF.unsat_relabel_iff ?_).mp h
-  intro v1 v2 hv1 hv2 heq
-  have h1 := CNF.lt_numLiterals hv1
-  have h2 := CNF.lt_numLiterals hv2
-  simp only [liftFun, h1, h2, reduceDIte] at heq
-  have heq' : v1 + 1 = v2 + 1 := congrArg Subtype.val heq
-  omega
+/-- `r` is a conflict. -/
+def isConflictK : KProp → Bool
+  | .conflict => true
+  | _ => false
 
-/-- Kernel-reducible replacement for `CNF.convertLRAT'`. -/
-def convertClausesK {n : Nat} (cls : List (CNF.Clause (PosFin n))) :
-    List (Option (DefaultClause n)) :=
-  cls.filterMap (fun cl => (mkClauseK cl).map some)
+/-! ## RUP and RAT checks -/
 
-/-- Kernel-reducible replacement for `CNF.convertLRAT`. As there, the leading
-    `none` aligns formula indices with 1-based LRAT clause ids. -/
-def convertK (cnf : CNF Nat) : DefaultFormula (cnf.numLiterals + 2) :=
-  DefaultFormula.ofArray (none :: convertClausesK (liftK cnf).clauses.toList).toArray
+/-- RUP check: `c` is tautological, or its negation propagates to a conflict
+    along `hints`. -/
+def checkRupK (s : State) (c : CNF.Clause Nat) (hints : Array Nat) : Bool :=
+  isTautK c.literals || isConflictK (propagateK s (negLitsK c.literals) hints.toList)
 
-theorem readyForRupAdd_convertK (cnf : CNF Nat) :
-    DefaultFormula.ReadyForRupAdd (convertK cnf) :=
-  DefaultFormula.readyForRupAdd_ofArray _
+/-- Extend `α` by the negations of the literals of `ls` other than `np`;
+    `none` if one of them is already true. -/
+def extendWithoutK (α : KAssign) (np : Literal Nat) : List (Literal Nat) → Option KAssign
+  | [] => some α
+  | l :: ls =>
+    if l == np then extendWithoutK α np ls
+    else if α.contains l then none
+    else extendWithoutK ((l.1, !l.2) :: α) np ls
 
-theorem readyForRatAdd_convertK (cnf : CNF Nat) :
-    DefaultFormula.ReadyForRatAdd (convertK cnf) :=
-  DefaultFormula.readyForRatAdd_ofArray _
+/-- Every live clause containing `np` has its id (slot + 1) in `ids`;
+    `i` is the slot of the head of the list. -/
+def ratExhaustiveK (ids : List Nat) (np : Literal Nat) :
+    List (Option (CNF.Clause Nat)) → Nat → Bool
+  | [], _ => true
+  | none :: rest, i => ratExhaustiveK ids np rest (i + 1)
+  | some c :: rest, i =>
+    (!c.literals.contains np || ids.contains (i + 1)) && ratExhaustiveK ids np rest (i + 1)
 
-theorem unsat_of_convertK_unsat (cnf : CNF Nat) :
-    Unsatisfiable (PosFin (cnf.numLiterals + 2)) (convertK cnf) → cnf.Unsat := by
-  intro h1
-  apply unsat_of_liftK_unsat
-  intro assignment
-  replace h1 := (unsat_of_cons_none_unsat _ h1) assignment
-  apply eq_false_of_ne_true
-  intro h2
-  apply h1
-  simp only [Formula.formulaEntails_def, List.all_eq_true, decide_eq_true_eq]
-  intro lratClause hlclause
-  simp only [Formula.toList, DefaultFormula.toList, DefaultFormula.ofArray,
-    List.toList_toArray, List.map_nil, List.append_nil, convertClausesK,
-    List.filterMap_filterMap, List.mem_filterMap] at hlclause
-  rcases hlclause with ⟨reflectClause, hrclause1, hrclause2⟩
-  have hmk : mkClauseK reflectClause = some lratClause := by
-    cases hcase : mkClauseK reflectClause <;> simp_all
-  simp only [CNF.eval, Array.all_eq_true'] at h2
-  have heval := h2 reflectClause (by simpa using hrclause1)
-  simp only [CNF.Clause.eval, List.any_eq_true] at heval
-  rcases heval with ⟨lit, hlit1, hlit2⟩
-  simp only [(· ⊨ ·), Clause.eval, List.any_eq_true, decide_eq_true_eq]
-  refine ⟨lit, ?_, by simp_all⟩
-  simp only [Clause.toList, DefaultClause.toList, mkClauseK_clause hmk]
-  exact List.mem_eraseDups.mpr hlit1
-
-/-! ## Kernel-reducible RAT path
-
-The only kernel-opaque construct inside the core checker's run path is
-`DefaultFormula.ratHintsExhaustive` (`Array.range`/`filter`/`map`). The three
-definitions below clone `ratHintsExhaustive`, `performRatAdd`, and
-`lratChecker` with a `List`-based exhaustiveness check and are proved equal
-to the originals, so `lratCheckerSound` transfers. -/
-
-/-- Kernel-reducible clone of `DefaultFormula.getRatClauseIndices`. -/
-def getRatClauseIndicesK {n : Nat} (clauses : Array (Option (DefaultClause n)))
-    (l : Literal (PosFin n)) : List Nat :=
-  (List.range clauses.size).filter (fun i =>
-    match clauses[i]! with
-    | none => false
-    | some c => c.contains (Literal.negate l))
-
-theorem getRatClauseIndicesK_eq {n : Nat} (clauses : Array (Option (DefaultClause n)))
-    (l : Literal (PosFin n)) :
-    getRatClauseIndicesK clauses l
-      = (DefaultFormula.getRatClauseIndices clauses l).toList := by
-  simp only [getRatClauseIndicesK, DefaultFormula.getRatClauseIndices,
-    Array.toList_filter, Array.toList_range]
-  rfl
-
-/-- Kernel-reducible clone of `DefaultFormula.ratHintsExhaustive`. -/
-def ratHintsExhaustiveK {n : Nat} (f : DefaultFormula n) (pivot : Literal (PosFin n))
+/-- RAT check on pivot `p`, as `State.checkRat`: `p ∈ c`; then `c` is
+    tautological, or RUP along `rupHints`, or the RAT hint groups cover every
+    live clause with `¬p` and each resolvent propagates to a conflict. -/
+def checkRatK (s : State) (c : CNF.Clause Nat) (p : Literal Nat) (rupHints : Array Nat)
     (ratHints : Array (Nat × Array Nat)) : Bool :=
-  getRatClauseIndicesK f.clauses pivot = ratHints.toList.map (fun x => x.1)
+  if !c.literals.contains p then false
+  else if isTautK c.literals then true
+  else
+    match propagateK s (negLitsK c.literals) rupHints.toList with
+    | .conflict => true
+    | .error => false
+    | .extended α =>
+      ratExhaustiveK (ratHints.toList.map (·.1)) p.negate s.formula.toList 0 &&
+      ratHints.toList.all fun (idx, hints) =>
+        match s.get? idx with
+        | none => false
+        | some c' =>
+          match extendWithoutK α p.negate c'.literals with
+          | none => true
+          | some α' => isConflictK (propagateK s α' hints.toList)
 
-theorem ratHintsExhaustiveK_eq {n : Nat} (f : DefaultFormula n) (pivot : Literal (PosFin n))
-    (ratHints : Array (Nat × Array Nat)) :
-    ratHintsExhaustiveK f pivot ratHints
-      = DefaultFormula.ratHintsExhaustive f pivot ratHints := by
-  unfold ratHintsExhaustiveK DefaultFormula.ratHintsExhaustive
-  apply decide_eq_decide.mpr
-  rw [getRatClauseIndicesK_eq, ← Array.toList_map, Array.toList_inj]
+/-! ## The checker -/
 
-/-- Clone of `DefaultFormula.performRatAdd` calling `ratHintsExhaustiveK`;
-    the body is otherwise verbatim. -/
-def performRatAddK {n : Nat} (f : DefaultFormula n) (c : DefaultClause n)
-    (pivot : Literal (PosFin n)) (rupHints : Array Nat)
-    (ratHints : Array (Nat × Array Nat)) :
-    DefaultFormula n × Bool :=
-  if ratHintsExhaustiveK f pivot ratHints then
-    let negC := DefaultClause.negate c
-    let (f, contradictionFound) := DefaultFormula.insertRupUnits f negC
-    if contradictionFound then (f, false)
-    else
-      let (f, derivedLits, derivedEmpty, encounteredError) :=
-        DefaultFormula.performRupCheck f rupHints
-      if encounteredError then (f, false)
-      else if derivedEmpty then (f, false)
-      else
-        let fold_fn := fun (acc : DefaultFormula n × Bool) ratHint =>
-          if acc.2 then DefaultFormula.performRatCheck acc.1 (Literal.negate pivot) ratHint
-          else (acc.1, false)
-        let (f, allChecksPassed) := ratHints.foldl fold_fn (f, true)
-        if !allChecksPassed then (f, false)
-        else
-          match f with
-          | ⟨clauses, rupUnits, ratUnits, assignments⟩ =>
-            let assignments := DefaultFormula.restoreAssignments assignments derivedLits
-            let f := DefaultFormula.clearRupUnits ⟨clauses, rupUnits, ratUnits, assignments⟩
-            (f.insert c, true)
-  else (f, false)
+/-- DIMACS integer to 0-based literal (`0` has none). -/
+def intLitK : Int → Option (Literal Nat)
+  | .ofNat 0 => none
+  | .ofNat (n + 1) => some (n, true)
+  | .negSucc n => some (n, false)
 
-theorem performRatAddK_eq {n : Nat} (f : DefaultFormula n) (c : DefaultClause n)
-    (pivot : Literal (PosFin n)) (rupHints : Array Nat)
-    (ratHints : Array (Nat × Array Nat)) :
-    performRatAddK f c pivot rupHints ratHints
-      = DefaultFormula.performRatAdd f c pivot rupHints ratHints := by
-  unfold performRatAddK DefaultFormula.performRatAdd
-  rw [ratHintsExhaustiveK_eq]
+/-- Clause conversion of the core checker, on the `Int` constructors. -/
+def convertClauseK (clause : Array Int) : CNF.Clause Nat :=
+  .ofLiterals (clause.toList.filterMap intLitK)
 
-/-- Kernel-reducible clone of the structurally recursive `lratChecker`,
-    instantiated at `DefaultFormula` and calling `performRatAddK`. -/
-def lratCheckerK {n : Nat} (f : DefaultFormula n) (prf : List (DefaultClauseAction n)) :
-    Result :=
-  match prf with
-  | [] => .outOfProof
-  | .addEmpty _ rupHints :: _ =>
-    let (_, checkSuccess) := DefaultFormula.performRupAdd f DefaultClause.empty rupHints
-    if checkSuccess then .success else .rupFailure
-  | .addRup _ c rupHints :: restPrf =>
-    let (f, checkSuccess) := DefaultFormula.performRupAdd f c rupHints
-    if checkSuccess then lratCheckerK f restPrf else .rupFailure
-  | .addRat _ c pivot rupHints ratHints :: restPrf =>
-    let (f, checkSuccess) := performRatAddK f c pivot rupHints ratHints
-    if checkSuccess then lratCheckerK f restPrf else .rupFailure
-  | .del ids :: restPrf => lratCheckerK (DefaultFormula.delete f ids) restPrf
+/-- Run a certificate; `true` iff the empty clause is derived. -/
+def runK (s : State) : List IntAction → Bool
+  | [] => false
+  | .addEmpty _ hints :: _ => checkRupK s .empty hints
+  | .addRup _ c hints :: rest =>
+    checkRupK s (convertClauseK c) hints && runK (s.add (convertClauseK c)) rest
+  | .addRat _ c p rup rat :: rest =>
+    checkRatK s (convertClauseK c) (p.1 - 1, p.2) rup rat &&
+      runK (s.add (convertClauseK c)) rest
+  | .del ids :: rest => runK (s.deleteMany ids) rest
 
-theorem lratCheckerK_eq {n : Nat} (f : DefaultFormula n)
-    (prf : List (DefaultClauseAction n)) :
-    lratCheckerK f prf = lratChecker f prf := by
-  induction prf generalizing f with
-  | nil => rfl
-  | cons a restPrf ih =>
-    cases a with
-    | addEmpty id rupHints => rfl
-    | addRup id c rupHints =>
-      simp only [lratCheckerK, lratChecker, ih]
-    | addRat id c pivot rupHints ratHints =>
-      simp only [lratCheckerK, lratChecker, performRatAddK_eq, ih]
-    | del ids =>
-      simp only [lratCheckerK, lratChecker, ih]
-      rfl
-
-/-! ## The kernel-mode check and its soundness -/
+/-- `State.ofCNF` without `Array.map`. -/
+def initK (cnf : CNF Nat) : State := ⟨⟨cnf.clauses.toList.map some⟩⟩
 
 /-- Kernel-mode LRAT check: every reduction step is kernel-friendly, so
     `checkKernel cnf proof = true` can be discharged with `decide +kernel`.
-    Mirrors `Std.Tactic.BVDecide.LRAT.check` up to the replacements above;
-    RAT actions whose pivot is not in the clause are dropped (they are
-    skipped by the reference checker as well). -/
+    Accepts the certificates that `Std.Tactic.BVDecide.LRAT.check` accepts. -/
 def checkKernel (cnf : CNF Nat) (proof : List IntAction) : Bool :=
-  let actions := proof.filterMap (intActionToDCAK (cnf.numLiterals + 2))
-  let actions := actions.filter (fun a =>
-    match a with
-    | .addRat _ c pivot _ _ => c.contains pivot
-    | _ => true)
-  lratCheckerK (convertK cnf) actions = .success
+  runK (initK cnf) proof
+
+/-! ## Soundness -/
+
+theorem unitOfK_sound {a : Nat → Bool} {α : KAssign} {lits : List (Literal Nat)}
+    (hα : KHolds a α) (hl : ∃ l ∈ lits, a l.1 = l.2) : (unitOfK α lits).Sound a := by
+  obtain ⟨m, hm, hma⟩ := hl
+  have hmf : (!α.contains (m.1, !m.2)) = true := by
+    cases hc : α.contains (m.1, !m.2)
+    · rfl
+    · have := hα _ (List.contains_iff_mem.mp hc)
+      simp only at this
+      rw [this] at hma
+      cases hm2 : m.2 <;> simp_all
+  have hmem : m ∈ lits.filter (fun l => !α.contains (l.1, !l.2)) :=
+    List.mem_filter.mpr ⟨hm, hmf⟩
+  unfold unitOfK
+  split
+  · next h => rw [h] at hmem; simp at hmem
+  · next l rest h =>
+    split
+    · next hall =>
+      intro x hx
+      rcases List.mem_cons.mp hx with rfl | hx
+      · rw [h] at hmem
+        rcases List.mem_cons.mp hmem with rfl | hmr
+        · exact hma
+        · have := List.all_eq_true.mp hall m hmr
+          simp only [beq_iff_eq] at this
+          subst this
+          exact hma
+      · exact hα x hx
+    · trivial
+
+theorem propagateK_sound {s : State} {a : Nat → Bool} (hs : s.toCNF.Sat a) :
+    ∀ {α : KAssign} {hints : List Nat}, KHolds a α → (propagateK s α hints).Sound a := by
+  intro α hints hα
+  induction hints generalizing α with
+  | nil => exact hα
+  | cons h hints ih =>
+    unfold propagateK
+    split
+    · trivial
+    · next c hc =>
+      have hcs : c.Sat a := CNF.sat_of_mem hs (State.mem_toCNF_of_eq_some hc)
+      have hu := unitOfK_sound (lits := c.literals) hα (CNF.Clause.sat_iff_exists_mem_eq.mp hcs)
+      split
+      · next heq => rw [heq] at hu; exact hu
+      · next α' heq => rw [heq] at hu; exact ih hu
+      · trivial
+
+theorem false_of_isConflictK {r : KProp} {a : Nat → Bool} (h : isConflictK r = true)
+    (hs : r.Sound a) : False := by
+  cases r <;> simp_all [isConflictK, KProp.Sound]
+
+theorem holds_negLitsK {a : Nat → Bool} {c : CNF.Clause Nat} (h : ¬ c.Sat a) :
+    KHolds a (negLitsK c.literals) := by
+  intro l hl
+  obtain ⟨m, hm, rfl⟩ := List.mem_map.mp hl
+  have := CNF.Clause.not_sat_iff_forall_mem_ne.mp h m hm
+  revert this
+  cases a m.1 <;> cases m.2 <;> simp
+
+theorem sat_of_isTautK {c : CNF.Clause Nat} (h : isTautK c.literals = true) :
+    ∀ a, c.Sat a := by
+  obtain ⟨l, hl, hl'⟩ := List.any_eq_true.mp h
+  exact CNF.Clause.sat_of_mem_of_mem_neg (atom := l.1) (pol := l.2) hl
+    (List.contains_iff_mem.mp hl')
+
+/-- A conflict from the negation of `c` means `c` is entailed. -/
+theorem entails_of_propagateK_conflict {s : State} {c : CNF.Clause Nat} {hints : List Nat}
+    (h : propagateK s (negLitsK c.literals) hints = .conflict) :
+    s.toCNF.EntailsClause c := by
+  rw [CNF.entails_clause_def]
+  intro a ha
+  apply Classical.byContradiction
+  intro hn
+  have hp := propagateK_sound ha (hints := hints) (holds_negLitsK hn)
+  rw [h] at hp
+  exact hp
+
+theorem entails_of_checkRupK {s : State} {c : CNF.Clause Nat} {hints : Array Nat}
+    (h : checkRupK s c hints = true) : s.toCNF.EntailsClause c := by
+  simp only [checkRupK, Bool.or_eq_true] at h
+  rcases h with h | h
+  · exact CNF.entails_clause_of_forall_sat (sat_of_isTautK h)
+  · rw [CNF.entails_clause_def]
+    intro a ha
+    apply Classical.byContradiction
+    intro hn
+    exact false_of_isConflictK h (propagateK_sound ha (holds_negLitsK hn))
+
+theorem extendWithoutK_some {a : Nat → Bool} {np : Literal Nat} :
+    ∀ {α α' : KAssign} {ls : List (Literal Nat)}, extendWithoutK α np ls = some α' →
+      KHolds a α → (∀ l ∈ ls, l ≠ np → a l.1 = !l.2) → KHolds a α' := by
+  intro α α' ls
+  induction ls generalizing α with
+  | nil =>
+    intro h hα _
+    simp only [extendWithoutK, Option.some.injEq] at h
+    subst h
+    exact hα
+  | cons l ls ih =>
+    intro h hα hls
+    have hls' : ∀ x ∈ ls, x ≠ np → a x.1 = !x.2 := fun x hx => hls x (List.mem_cons_of_mem _ hx)
+    simp only [extendWithoutK] at h
+    split at h
+    · exact ih h hα hls'
+    · next hne =>
+      split at h
+      · simp at h
+      · apply ih h ?_ hls'
+        intro x hx
+        rcases List.mem_cons.mp hx with rfl | hx
+        · exact hls l List.mem_cons_self (fun heq => hne (by simp [heq]))
+        · exact hα x hx
+
+theorem extendWithoutK_none {a : Nat → Bool} {np : Literal Nat} :
+    ∀ {α : KAssign} {ls : List (Literal Nat)}, extendWithoutK α np ls = none →
+      KHolds a α → ∃ l ∈ ls, l ≠ np ∧ a l.1 = l.2 := by
+  intro α ls
+  induction ls generalizing α with
+  | nil => intro h; simp [extendWithoutK] at h
+  | cons l ls ih =>
+    intro h hα
+    simp only [extendWithoutK] at h
+    split at h
+    · obtain ⟨x, hx, hne, hxa⟩ := ih h hα
+      exact ⟨x, List.mem_cons_of_mem _ hx, hne, hxa⟩
+    · next hne =>
+      have hne' : l ≠ np := fun heq => hne (by simp [heq])
+      split at h
+      · next hc =>
+        exact ⟨l, List.mem_cons_self, hne', hα l (List.contains_iff_mem.mp hc)⟩
+      · by_cases hla : a l.1 = l.2
+        · exact ⟨l, List.mem_cons_self, hne', hla⟩
+        · have hα' : KHolds a ((l.1, !l.2) :: α) := by
+            intro x hx
+            rcases List.mem_cons.mp hx with rfl | hx
+            · revert hla
+              cases a l.1 <;> cases l.2 <;> simp
+            · exact hα x hx
+          obtain ⟨x, hx, hxne, hxa⟩ := ih h hα'
+          exact ⟨x, List.mem_cons_of_mem _ hx, hxne, hxa⟩
+
+theorem ratExhaustiveK_spec {ids : List Nat} {np : Literal Nat} :
+    ∀ {l : List (Option (CNF.Clause Nat))} {i : Nat}, ratExhaustiveK ids np l i = true →
+      ∀ (j : Nat) (hj : j < l.length) (c : CNF.Clause Nat), l[j] = some c →
+        np ∈ c.literals → i + j + 1 ∈ ids := by
+  intro l
+  induction l with
+  | nil => intro i _ j hj; simp at hj
+  | cons o rest ih =>
+    intro i h j hj c hc hnp
+    cases o with
+    | none =>
+      simp only [ratExhaustiveK] at h
+      cases j with
+      | zero => simp at hc
+      | succ j =>
+        have := ih h j (by simpa using hj) c (by simpa using hc) hnp
+        rwa [show i + (j + 1) + 1 = i + 1 + j + 1 by omega]
+    | some c0 =>
+      simp only [ratExhaustiveK, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at h
+      cases j with
+      | zero =>
+        simp only [List.getElem_cons_zero, Option.some.injEq] at hc
+        subst hc
+        rcases h.1 with h1 | h1
+        · have := List.contains_iff_mem.mpr hnp
+          simp_all
+        · simpa using List.contains_iff_mem.mp h1
+      | succ j =>
+        have := ih h.2 j (by simpa using hj) c (by simpa using hc) hnp
+        rwa [show i + (j + 1) + 1 = i + 1 + j + 1 by omega]
+
+theorem checkRatK_spec {s : State} {c : CNF.Clause Nat} {p : Literal Nat}
+    {rupHints : Array Nat} {ratHints : Array (Nat × Array Nat)}
+    (h : checkRatK s c p rupHints ratHints = true) :
+    p ∈ c ∧ ∀ c' ∈ s.toCNF, p.negate ∈ c' →
+      s.toCNF.EntailsClause (c ++ c'.erase p.negate) := by
+  unfold checkRatK at h
+  split at h
+  · simp at h
+  · next hp =>
+    have hpc : p ∈ c := by
+      simp only [Bool.not_eq_true', Bool.not_eq_false] at hp
+      exact List.contains_iff_mem.mp hp
+    refine ⟨hpc, ?_⟩
+    intro c' hc' hnp
+    split at h
+    · next ht =>
+      exact CNF.entails_clause_append_left (CNF.entails_clause_of_forall_sat (sat_of_isTautK ht))
+    · split at h
+      · next hcf => exact CNF.entails_clause_append_left (entails_of_propagateK_conflict hcf)
+      · simp at h
+      · next α hext =>
+        simp only [Bool.and_eq_true, List.all_eq_true] at h
+        obtain ⟨hex, hall⟩ := h
+        obtain ⟨i, hi, hci⟩ := State.exists_getElem_eq_some_of_mem hc'
+        have hmem := ratExhaustiveK_spec hex i (by simpa using hi) c' (by simpa using hci) hnp
+        obtain ⟨⟨idx, hints⟩, hrat, hidx⟩ := List.mem_map.mp hmem
+        simp only [Nat.zero_add] at hidx
+        have hget : s.get? idx = some c' := by
+          rw [hidx]
+          exact State.get?_add_one_of_getElem_eq_some hi hci
+        have h1 := hall (idx, hints) hrat
+        simp only [hget] at h1
+        rw [CNF.entails_clause_def]
+        intro a ha
+        apply Classical.byContradiction
+        intro hn
+        rw [CNF.Clause.sat_append] at hn
+        have hnc : ¬ c.Sat a := fun h => hn (Or.inl h)
+        have hnd : ¬ (c'.erase p.negate).Sat a := fun h => hn (Or.inr h)
+        have hα : KHolds a α := by
+          have := propagateK_sound ha (hints := rupHints.toList) (holds_negLitsK hnc)
+          rw [hext] at this
+          exact this
+        split at h1
+        · next hnone =>
+          obtain ⟨l, hl, hne, hla⟩ := extendWithoutK_none hnone hα
+          exact hnd (CNF.Clause.sat_of_mem_of_eq
+            (CNF.Clause.mem_erase_iff.mpr ⟨Ne.symm hne, hl⟩) hla)
+        · next α' hsome =>
+          have hα' := extendWithoutK_some hsome hα (by
+            intro l hl hne
+            have := CNF.Clause.not_sat_iff_forall_mem_ne.mp hnd l
+              (CNF.Clause.mem_erase_iff.mpr ⟨Ne.symm hne, hl⟩)
+            revert this
+            cases a l.1 <;> cases l.2 <;> simp)
+          exact false_of_isConflictK h1 (propagateK_sound ha hα')
+
+theorem runK_sound : ∀ {s : State} {proof : List IntAction},
+    runK s proof = true → s.toCNF.Unsat := by
+  intro s proof h
+  induction proof generalizing s with
+  | nil => simp [runK] at h
+  | cons act rest ih =>
+    cases act with
+    | addEmpty _ hints =>
+      simp only [runK] at h
+      exact CNF.unsat_of_entails_clause_unsat CNF.Clause.unsat_empty (entails_of_checkRupK h)
+    | addRup _ c hints =>
+      simp only [runK, Bool.and_eq_true] at h
+      exact CNF.unsat_of_entails_unsat (ih h.2)
+        (State.entails_add_of_entails_clause (entails_of_checkRupK h.1))
+    | addRat _ c p rup rat =>
+      simp only [runK, Bool.and_eq_true] at h
+      have hspec := checkRatK_spec h.1
+      have hu := ih h.2
+      rw [State.add_toCNF_eq_toCNF_add] at hu
+      exact CNF.unsat_of_forall_exists (CNF.exists_sat_add_of_rat hspec.1 hspec.2) hu
+    | del ids =>
+      simp only [runK] at h
+      exact CNF.unsat_of_entails_unsat (ih h) State.entails_deleteMany
+
+theorem initK_toCNF (cnf : CNF Nat) : (initK cnf).toCNF = cnf := by
+  rw [CNF.Internal.ext_iff]
+  show Array.filterMap id (⟨cnf.clauses.toList.map some⟩ : Array _) = cnf.clauses
+  apply Array.toList_inj.mp
+  simp [List.filterMap_map]
 
 theorem checkKernel_sound (cnf : CNF Nat) (proof : List IntAction)
     (h : checkKernel cnf proof = true) : cnf.Unsat := by
-  apply unsat_of_convertK_unsat
-  simp only [checkKernel, lratCheckerK_eq, decide_eq_true_eq] at h
-  apply lratCheckerSound _ (readyForRupAdd_convertK cnf) (readyForRatAdd_convertK cnf) _ ?_ h
-  intro a ha
-  have hfil := (List.mem_filter.mp ha).2
-  cases a with
-  | addEmpty id rupHints => trivial
-  | addRup id c rupHints => trivial
-  | del ids => trivial
-  | addRat id c pivot rupHints ratHints =>
-    simp only [WellFormedAction]
-    rw [Clause.limplies_iff_mem]
-    exact (DefaultClause.contains_iff c pivot).mp (by simpa using hfil)
+  have := runK_sound h
+  rwa [initK_toCNF] at this
 
 end LRATCatcher

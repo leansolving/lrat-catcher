@@ -16,8 +16,8 @@ lrat_reflect +kernel tiny_kernel "LRATCatcher/Tests/tiny.cnf" "LRATCatcher/Tests
 
 -- Lean-defined CNF form (mirrors ReflectTest.tinyDef).
 def tinyDefK : Std.Sat.CNF Nat :=
-  { clauses := #[[(0, true), (1, true)], [(0, false), (1, true)],
-                 [(0, true), (1, false)], [(0, false), (1, false)]] }
+  { clauses := #[.ofLiterals [(0, true), (1, true)], .ofLiterals [(0, false), (1, true)],
+                 .ofLiterals [(0, true), (1, false)], .ofLiterals [(0, false), (1, false)]] }
 
 lrat_reflect_cnf +kernel tiny_def_kernel (tinyDefK) "LRATCatcher/Tests/tiny.lrat"
 

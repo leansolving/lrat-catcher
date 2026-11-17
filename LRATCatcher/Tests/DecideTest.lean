@@ -14,10 +14,8 @@ lrat_decide r33Decide "examples/ramsey/r33_6.cnf"
 
 #print axioms r33Decide
 
-/- PORT (v4.36.0): kernel mode disabled until the list-based kernel checker exists
 lrat_decide +kernel r33DecideKernel "examples/ramsey/r33_6.cnf"
 
 #print axioms r33DecideKernel
--/
 
 end LRATCatcher.Tests
