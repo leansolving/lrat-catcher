@@ -52,11 +52,11 @@ def cliqueEdgeVars (n : Nat) (vs : List Nat) : List Nat :=
 
 /-- Clause "some edge of this clique is blue (false)". -/
 def redClause (n : Nat) (vs : List Nat) : CNF.Clause Nat :=
-  (cliqueEdgeVars n vs).map fun v => (v, false)
+  CNF.Clause.ofLiterals ((cliqueEdgeVars n vs).map fun v => (v, false))
 
 /-- Clause "some edge of this clique is red (true)". -/
 def blueClause (n : Nat) (vs : List Nat) : CNF.Clause Nat :=
-  (cliqueEdgeVars n vs).map fun v => (v, true)
+  CNF.Clause.ofLiterals ((cliqueEdgeVars n vs).map fun v => (v, true))
 
 /-- CNF encoding of "`K_n` has a 2-coloring with no red `K_s` and no blue
     `K_t`". -/
@@ -168,13 +168,13 @@ theorem clause_sat_of_mem (n s t : Nat) (f : Nat → Bool)
     obtain ⟨hlen, hbound, hnodup⟩ := subsets_valid n s vs hvs
     obtain ⟨v, hv, hf⟩ :=
       exists_false_edge n vs f (hred vs hlen hbound hnodup)
-    simp only [redClause, CNF.Clause.eval, List.any_map, List.any_eq_true]
+    simp only [redClause, eval_ofLiterals, List.any_map, List.any_eq_true]
     exact ⟨v, hv, by simp [Function.comp, hf]⟩
   · obtain ⟨vs, hvs, rfl⟩ := List.mem_map.mp hcl
     obtain ⟨hlen, hbound, hnodup⟩ := subsets_valid n t vs hvs
     obtain ⟨v, hv, hf⟩ :=
       exists_true_edge n vs f (hblue vs hlen hbound hnodup)
-    simp only [blueClause, CNF.Clause.eval, List.any_map, List.any_eq_true]
+    simp only [blueClause, eval_ofLiterals, List.any_map, List.any_eq_true]
     exact ⟨v, hv, by simp [Function.comp, hf]⟩
 
 /-- **Encoding soundness**: if the encoding is UNSAT, every 2-coloring of

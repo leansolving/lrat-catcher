@@ -34,7 +34,8 @@ abbrev Cube := List (Nat × Bool)
 namespace Cube
 
 /-- A cube as a CNF: each literal becomes a unit clause. -/
-def toCNF (c : Cube) : CNF Nat := { clauses := (c.map fun lit => [lit]).toArray }
+def toCNF (c : Cube) : CNF Nat :=
+  { clauses := (c.map fun lit => CNF.Clause.ofLiterals [lit]).toArray }
 
 /-- `a` satisfies a cube iff it satisfies every literal. -/
 def sat (a : Nat → Bool) (c : Cube) : Bool := c.all fun (i, b) => a i == b
@@ -44,19 +45,21 @@ theorem eval_toCNF (a : Nat → Bool) (c : Cube) : CNF.eval a c.toCNF = c.sat a 
   simp only [CNF.eval, toCNF, sat, List.all_toArray, List.all_map]
   congr 1
   funext lit
-  simp [CNF.Clause.eval]
+  simp
 
 /-- The negation of a cube, as a single clause. -/
-def negClause (c : Cube) : CNF.Clause Nat := c.map fun (i, b) => (i, !b)
+def negClause (c : Cube) : CNF.Clause Nat :=
+  CNF.Clause.ofLiterals (c.map fun (i, b) => (i, !b))
 
 /-- If the negated-cube clause is falsified, the cube is satisfied. -/
 theorem sat_of_negClause_false {a : Nat → Bool} {c : Cube}
     (h : CNF.Clause.eval a c.negClause = false) : c.sat a = true := by
+  rw [negClause, eval_ofLiterals] at h
   induction c with
   | nil => rfl
   | cons hd tl ih =>
     obtain ⟨i, b⟩ := hd
-    simp only [negClause, List.map_cons, CNF.Clause.eval_cons, Bool.or_eq_false_iff] at h
+    simp only [List.map_cons, List.any_cons, Bool.or_eq_false_iff] at h
     have hsat : (a i == b) = true := by
       cases hab : a i <;> cases b <;> simp_all
     simp only [sat, List.all_cons, hsat, Bool.true_and]

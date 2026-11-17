@@ -46,11 +46,11 @@ def kVar (k i c : Nat) : Nat := (i - 1) * k + c
 
 /-- At-least-one-color clause for element `i`. -/
 def aloClause (k i : Nat) : CNF.Clause Nat :=
-  (List.range k).map fun c => (kVar k i c, true)
+  CNF.Clause.ofLiterals ((List.range k).map fun c => (kVar k i c, true))
 
 /-- Not-all-three clause for triple `(a, b, c)` and color `col`. -/
 def monoClause (k a b c col : Nat) : CNF.Clause Nat :=
-  [(kVar k a col, false), (kVar k b col, false), (kVar k c col, false)]
+  CNF.Clause.ofLiterals [(kVar k a col, false), (kVar k b col, false), (kVar k c col, false)]
 
 /-- CNF encoding of "`{1,…,n}` has a Schur-free k-coloring". -/
 def encodeK (k n : Nat) : CNF Nat :=
@@ -93,7 +93,7 @@ theorem alo_sat (k n : Nat) (f : Nat → Nat) (i : Nat)
     (hk : 0 < k) (hi : 1 ≤ i) (hin : i ≤ n) (hcol : ∀ j, 1 ≤ j → j ≤ n → f j < k) :
     CNF.Clause.eval (kColoringVal k f) (aloClause k i) = true := by
   have hfi := hcol i hi hin
-  simp only [aloClause, CNF.Clause.eval, List.any_map, List.any_eq_true]
+  simp only [aloClause, eval_ofLiterals, List.any_map, List.any_eq_true]
   refine ⟨f i, List.mem_range.mpr hfi, ?_⟩
   simp [Function.comp, kColoringVal_eq k f i (f i) hk hi hfi]
 
@@ -103,7 +103,7 @@ theorem mono_sat (k n : Nat) (f : Nat → Nat) (a b c col : Nat)
     (hfree : ∀ a' b' : Nat, 1 ≤ a' → a' ≤ b' → a' + b' ≤ n →
       ¬(f a' = f b' ∧ f b' = f (a' + b'))) :
     CNF.Clause.eval (kColoringVal k f) (monoClause k a b c col) = true := by
-  simp only [monoClause, CNF.Clause.eval, List.any_cons, List.any_nil,
+  simp only [monoClause, eval_ofLiterals, List.any_cons, List.any_nil,
     Bool.or_false, Bool.or_eq_true,
     kColoringVal_eq k f a col hk ha hcol,
     kColoringVal_eq k f b col hk (by omega) hcol,

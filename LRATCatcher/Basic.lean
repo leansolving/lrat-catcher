@@ -33,6 +33,14 @@ namespace LRATCatcher
     on `0` this would return `(0, false)` by `Nat` truncating subtraction). -/
 def dimacsLit (l : Int) : Nat × Bool := (l.natAbs - 1, decide (0 < l))
 
+/-! Clauses are built from literal lists with `CNF.Clause.ofLiterals` everywhere in the
+    library (DIMACS parsing, cubes, encodings); `eval_ofLiterals` evaluates such a clause. -/
+
+/-- Evaluating a clause built from a literal list: some literal agrees with `a`. -/
+@[simp] theorem eval_ofLiterals {α : Type} (a : α → Bool) (l : List (Literal α)) :
+    CNF.Clause.eval a (CNF.Clause.ofLiterals l) = l.any fun (i, b) => a i == b := by
+  simp [CNF.Clause.eval]
+
 /-- Parse a DIMACS CNF string; see the module docstring for the exact rule. -/
 def parseDimacs (s : String) : CNF Nat := Id.run do
   let mut clauses : Array (CNF.Clause Nat) := #[]
