@@ -32,92 +32,123 @@ namespace LRATCatcher
 
 /-! ## Resumable chunk checker -/
 
-/-- Result of checking one chunk: the updated clause database, or `refuted`
-    if the chunk derived the empty clause. -/
-inductive ChunkOut (n : Nat) where
-  | more (f : DefaultFormula n)
+/-- Clause conversion of the core checker (`check.convertClause`, a helper
+    local to `check` there): DIMACS integers to 0-based literals, zeros
+    dropped. -/
+def convertClause (clause : Array Int) : CNF.Clause Nat :=
+  .ofLiterals <| clause.toList.filterMap fun int =>
+    if int > 0 then
+      some (int.natAbs - 1, true)
+    else if int < 0 then
+      some (int.natAbs - 1, false)
+    else
+      none
+
+/-- Result of checking one action or one chunk: the updated clause database,
+    or `refuted` if the empty clause was derived. -/
+inductive ChunkOut where
+  | more (s : State)
   | refuted
 
+/-- One action, as one iteration of the core checker's loop (`check.go`);
+    `none` on a failed check. -/
+def step (s : State) : IntAction → Option ChunkOut
+  | .addEmpty _ rupHints => if s.checkEmpty rupHints then some .refuted else none
+  | .addRup _ clause rupHints =>
+    let c := convertClause clause
+    if s.checkRup c rupHints then some (.more (s.add c)) else none
+  | .addRat _ clause pivot rupHints ratHints =>
+    let c := convertClause clause
+    if s.checkRat c ⟨pivot.1 - 1, pivot.2⟩ rupHints ratHints then some (.more (s.add c))
+    else none
+  | .del ids => some (.more (s.deleteMany ids))
+
+theorem step_refuted_sound {s : State} {a : IntAction} :
+    step s a = some .refuted → s.toCNF.Unsat := by
+  intro h
+  cases a with
+  | addEmpty _ rupHints =>
+    simp only [step] at h
+    split at h
+    · rename_i hc
+      exact CNF.unsat_of_entails_clause_unsat (c := .empty) (by simp)
+        (State.entails_clause_empty_of_checkEmpty hc)
+    · simp at h
+  | addRup =>
+    simp only [step] at h
+    split at h <;> simp at h
+  | addRat =>
+    simp only [step] at h
+    split at h <;> simp at h
+  | del => simp [step] at h
+
+theorem step_more_sound {s s' : State} {a : IntAction} :
+    step s a = some (.more s') → s'.toCNF.Unsat → s.toCNF.Unsat := by
+  intro h hu
+  cases a with
+  | addEmpty =>
+    simp only [step] at h
+    split at h <;> simp at h
+  | addRup _ clause rupHints =>
+    simp only [step] at h
+    split at h
+    · rename_i hc
+      simp only [Option.some.injEq, ChunkOut.more.injEq] at h
+      subst h
+      exact CNF.unsat_of_entails_unsat hu
+        (State.entails_add_of_entails_clause (State.entails_clause_of_checkRup hc))
+    · simp at h
+  | addRat _ clause pivot rupHints ratHints =>
+    simp only [step] at h
+    split at h
+    · rename_i hc
+      simp only [Option.some.injEq, ChunkOut.more.injEq] at h
+      subst h
+      exact CNF.unsat_of_forall_exists
+        (fun _ ha => State.unsat_of_unsat_of_checkRat hc ha) hu
+    · simp at h
+  | del ids =>
+    simp only [step, Option.some.injEq, ChunkOut.more.injEq] at h
+    subst h
+    exact CNF.unsat_of_entails_unsat hu State.entails_deleteMany
+
 /-- Process a certificate chunk from `idx` on, threading the clause database.
-    Mirrors `compactLratChecker.go` (including its skips: unconvertible
-    actions and RAT actions whose pivot is missing), but returns the final
-    state instead of discarding it; `none` on a failed check. -/
-def runChunk {n : Nat} (f : DefaultFormula n) (chunk : Array IntAction) (idx : Nat) :
-    Option (ChunkOut n) :=
+    Mirrors the core checker's loop, but returns the final state instead of
+    discarding it: `some (.more s')` when the chunk is exhausted,
+    `some .refuted` when it derives the empty clause, `none` on a failed
+    check. -/
+def runChunk (s : State) (chunk : Array IntAction) (idx : Nat) : Option ChunkOut :=
   if h : idx < chunk.size then
-    match intActionToDefaultClauseAction n chunk[idx] with
-    | none => runChunk f chunk (idx + 1)
-    | some (.addEmpty _ rupHints) =>
-      let (_, ok) := Formula.performRupAdd f Clause.empty rupHints
-      if ok then some .refuted else none
-    | some (.addRup _ c rupHints) =>
-      let (f', ok) := Formula.performRupAdd f c rupHints
-      if ok then runChunk f' chunk (idx + 1) else none
-    | some (.addRat _ c pivot rupHints ratHints) =>
-      if pivot ∈ Clause.toList c then
-        let (f', ok) := Formula.performRatAdd f c pivot rupHints ratHints
-        if ok then runChunk f' chunk (idx + 1) else none
-      else
-        runChunk f chunk (idx + 1)
-    | some (.del ids) => runChunk (Formula.delete f ids) chunk (idx + 1)
+    match step s chunk[idx] with
+    | some .refuted => some .refuted
+    | some (.more s') => runChunk s' chunk (idx + 1)
+    | none => none
   else
-    some (.more f)
+    some (.more s)
+termination_by chunk.size - idx
 
-/-- A refuting chunk makes the incoming state unsatisfiable
-    (mirrors `compactLratChecker`'s `go_sound`). -/
-theorem runChunk_refuted_sound {n : Nat} (f : DefaultFormula n) (chunk : Array IntAction)
-    (idx : Nat) (h1 : Formula.ReadyForRupAdd f) (h2 : Formula.ReadyForRatAdd f) :
-    runChunk f chunk idx = some .refuted → Unsatisfiable (PosFin n) f := by
-  fun_induction runChunk
-  case case1 => rename_i ih; apply ih <;> assumption
-  case case2 =>
-    rename_i hints _ _ heq
-    intro _
-    apply addEmptyCaseSound (rupHints := hints)
-    · assumption
-    · simp [heq]
-  case case3 => simp
-  case case4 => grind [Unsatisfiable, Liff]
-  case case5 => simp
-  case case6 => grind [Equisat, Clause.limplies_iff_mem]
-  case case7 => simp
-  case case8 => rename_i ih; apply ih <;> assumption
-  case case9 =>
-    rename_i ih
-    intro h3 p pf
-    apply ih (by grind) (by grind) h3 p
-    apply Formula.limplies_delete
-    assumption
-  case case10 => simp
+/-- A refuting chunk makes the incoming state unsatisfiable. -/
+theorem runChunk_refuted_sound {s : State} {chunk : Array IntAction} {idx : Nat} :
+    runChunk s chunk idx = some .refuted → s.toCNF.Unsat := by
+  fun_induction runChunk s chunk idx with
+  | case1 s idx hidx hstep => intro _; exact step_refuted_sound hstep
+  | case2 s idx hidx s' hstep ih => intro h; exact step_more_sound hstep (ih h)
+  | case3 => simp
+  | case4 => simp
 
-/-- A non-refuting chunk hands over a state that is ready for the next chunk
-    and whose unsatisfiability transfers back to the incoming state. -/
-theorem runChunk_more_sound {n : Nat} (f : DefaultFormula n) (chunk : Array IntAction)
-    (idx : Nat) {f' : DefaultFormula n}
-    (h1 : Formula.ReadyForRupAdd f) (h2 : Formula.ReadyForRatAdd f) :
-    runChunk f chunk idx = some (.more f') →
-      Formula.ReadyForRupAdd f' ∧ Formula.ReadyForRatAdd f' ∧
-        (Unsatisfiable (PosFin n) f' → Unsatisfiable (PosFin n) f) := by
-  fun_induction runChunk
-  case case1 => rename_i ih; apply ih <;> assumption
-  case case2 => simp
-  case case3 => simp
-  case case4 => grind [Unsatisfiable, Liff]
-  case case5 => simp
-  case case6 => grind [Equisat, Clause.limplies_iff_mem]
-  case case7 => simp
-  case case8 => rename_i ih; apply ih <;> assumption
-  case case9 =>
-    rename_i ih
-    intro h3
-    obtain ⟨r1, r2, himp⟩ := ih (by grind) (by grind) h3
-    exact ⟨r1, r2, fun hu =>
-      limplies_unsat _ _ Formula.limplies_delete (himp hu)⟩
-  case case10 =>
-    intro h
+/-- A non-refuting chunk hands over a state whose unsatisfiability transfers
+    back to the incoming state. -/
+theorem runChunk_more_sound {s s' : State} {chunk : Array IntAction} {idx : Nat} :
+    runChunk s chunk idx = some (.more s') → s'.toCNF.Unsat → s.toCNF.Unsat := by
+  fun_induction runChunk s chunk idx with
+  | case1 => simp
+  | case2 s idx hidx s'' hstep ih => intro h hu; exact step_more_sound hstep (ih h hu)
+  | case3 => simp
+  | case4 s idx hidx =>
+    intro h hu
     simp only [Option.some.injEq, ChunkOut.more.injEq] at h
     subst h
-    exact ⟨h1, h2, id⟩
+    exact hu
 
 /-! ## LRAT text helper -/
 
@@ -149,26 +180,27 @@ def parseActions (s : String) : Array IntAction :=
   | .ok p => p.map normalizeAction
   | .error _ => #[]
 
-/-! ## Snapshots -/
+/- PORT (v4.36.0): A3/A4 in progress
+/ -! ## Snapshots - /
 
-/-- Plain-data image of a checker state between chunks: clause literal lists,
-    with `none` holes preserved (clause IDs are positions). -/
+/ -- Plain-data image of a checker state between chunks: clause literal lists,
+    with `none` holes preserved (clause IDs are positions). - /
 abbrev Snapshot := List (Option (List (Nat × Bool)))
 
-/-- Render a snapshot as text: one line per clause position — `.` for a hole,
+/ -- Render a snapshot as text: one line per clause position — `.` for a hole,
     otherwise the clause as signed integers terminated by `0` (variable =
     `PosFin` value = original DIMACS variable, sign = polarity). Snapshots are
     untrusted data plumbing (a wrong snapshot fails the Boolean step checks),
-    so the codec needs no round-trip proof. -/
+    so the codec needs no round-trip proof. - /
 def printSnap (snap : Snapshot) : String :=
   String.join <| snap.map fun
     | none => ".\n"
     | some ls =>
       String.join (ls.map fun (v, b) => if b then s!"{v} " else s!"-{v} ") ++ "0\n"
 
-/-- Parse a `printSnap` rendering: `.` lines are holes, other lines are read
+/ -- Parse a `printSnap` rendering: `.` lines are holes, other lines are read
     as signed integers up to the terminating `0`; blank lines and non-integer
-    tokens are ignored. -/
+    tokens are ignored. - /
 def parseSnap (s : String) : Snapshot := Id.run do
   let mut snap : Snapshot := []
   for line in s.splitOn "\n" do
@@ -187,11 +219,11 @@ def parseSnap (s : String) : Snapshot := Id.run do
       snap := some ls.reverse :: snap
   return snap.reverse
 
-/-- Strip a clause database down to plain data (positions preserved). -/
+/ -- Strip a clause database down to plain data (positions preserved). - /
 def serialize {n : Nat} (f : DefaultFormula n) : Snapshot :=
   (f.clauses.map (Option.map fun c => c.clause.map fun l => (l.1.val, l.2))).toList
 
-/-- Rebuild literals over `PosFin n`; fails on out-of-range variables. -/
+/ -- Rebuild literals over `PosFin n`; fails on out-of-range variables. - /
 def restoreLits (n : Nat) : List (Nat × Bool) → Option (List (Literal (PosFin n)))
   | [] => some []
   | (v, b) :: rest =>
@@ -208,8 +240,8 @@ private theorem nodupkey_of_no_compl {n : Nat} {ls : List (Literal (PosFin n))}
   · exact Or.inr (by simpa using h (l, true) h1)
   · exact Or.inl h1
 
-/-- Rebuild one clause; fails on out-of-range, duplicate, or complementary
-    literals (`serialize` output always passes). -/
+/ -- Rebuild one clause; fails on out-of-range, duplicate, or complementary
+    literals (`serialize` output always passes). - /
 def restoreClause (n : Nat) (ls0 : List (Nat × Bool)) : Option (DefaultClause n) := do
   let ls ← restoreLits n ls0
   if h : ls.Nodup ∧ ∀ l ∈ ls, (l.1, !l.2) ∉ ls then
@@ -217,7 +249,7 @@ def restoreClause (n : Nat) (ls0 : List (Nat × Bool)) : Option (DefaultClause n
   else
     none
 
-/-- Rebuild the clause array from a snapshot, position by position. -/
+/ -- Rebuild the clause array from a snapshot, position by position. - /
 def restoreList (n : Nat) : Snapshot → Option (List (Option (DefaultClause n)))
   | [] => some []
   | none :: rest => (restoreList n rest).map (none :: ·)
@@ -226,10 +258,10 @@ def restoreList (n : Nat) : Snapshot → Option (List (Option (DefaultClause n))
     let cs ← restoreList n rest
     return some c :: cs
 
-/-- Tail-recursive `restoreList`, substituted at compilation (`@[csimp]`).
+/ -- Tail-recursive `restoreList`, substituted at compilation (`@[csimp]`).
     Snapshots keep one position per clause *id* (holes included), so at
     GB-certificate scale they have millions of positions and the naive
-    recursion overflows the native stack (SIGABRT inside `native_decide`). -/
+    recursion overflows the native stack (SIGABRT inside `native_decide`). - /
 private def restoreListTR (n : Nat) : Snapshot → Option (List (Option (DefaultClause n))) :=
   go #[]
 where
@@ -266,17 +298,17 @@ private theorem restoreListTR.go_eq {n : Nat} (snap : Snapshot)
   rw [restoreListTR, restoreListTR.go_eq]
   cases restoreList n snap <;> simp
 
-/-- Restore a checker state from a snapshot. Invalid snapshots restore to the
+/ -- Restore a checker state from a snapshot. Invalid snapshots restore to the
     empty (satisfiable) formula, which is sound: soundness lemmas only ever
     *assume* unsatisfiability of a restored state. Readiness holds for both
-    branches via `readyForRupAdd_ofArray`/`readyForRatAdd_ofArray`. -/
+    branches via `readyForRupAdd_ofArray`/`readyForRatAdd_ofArray`. - /
 def restoreD (n : Nat) (snap : Snapshot) : DefaultFormula n :=
   match restoreList n snap with
   | some cs => Formula.ofArray cs.toArray
   | none => Formula.ofArray #[]
 
-/-- A restored state is always ready for further chunks (both `restoreD`
-    branches go through `Formula.ofArray`). -/
+/ -- A restored state is always ready for further chunks (both `restoreD`
+    branches go through `Formula.ofArray`). - /
 theorem restoreD_ready {n : Nat} (snap : Snapshot) :
     Formula.ReadyForRupAdd (restoreD n snap) ∧ Formula.ReadyForRatAdd (restoreD n snap) := by
   unfold restoreD
@@ -291,7 +323,7 @@ theorem units_empty_of_ready {n : Nat} {f : DefaultFormula n}
   unfold DefaultFormula.ReadyForRatAdd at h2'
   exact ⟨h1'.1, h2'.1⟩
 
-/-! ## Roundtrip: `restoreD` after `serialize` preserves the model set -/
+/ -! ## Roundtrip: `restoreD` after `serialize` preserves the model set - /
 
 private theorem restoreLits_serialize {n : Nat} (ls : List (Literal (PosFin n))) :
     restoreLits n (ls.map fun l => (l.1.val, l.2)) = some ls := by
@@ -337,7 +369,7 @@ private theorem liff_ofArray_units {n : Nat} (f : DefaultFormula n)
     simp [DefaultFormula.toList, DefaultFormula.ofArray, hrup, hrat]
   rw [ht]
 
-/-! ## Compaction: hole-free snapshots preserve the model set
+/ -! ## Compaction: hole-free snapshots preserve the model set
 
 `serialize` keeps one position per clause id, holes included, so the snapshot
 of a long run carries every id the solver ever allocated even though almost
@@ -347,10 +379,10 @@ formula with the same clause list as the verbatim one, so unsatisfiability
 transfers across a compacting boundary exactly as across a verbatim boundary.
 Positions shift, so the ids and hints of all subsequent chunks must be
 renumbered to match; that renumbering is data preparation, not trusted code —
-a wrong id or hint makes the per-chunk check fail, never succeed. -/
+a wrong id or hint makes the per-chunk check fail, never succeed. - /
 
-/-- The hole-dropping core of `compactSnapshot` (order of live clauses
-    preserved). -/
+/ -- The hole-dropping core of `compactSnapshot` (order of live clauses
+    preserved). - /
 private def compactCore (snap : Snapshot) : Snapshot :=
   (snap.filterMap id).map some
 
@@ -372,11 +404,11 @@ private theorem restoreList_compactCore {n : Nat} (snap : Snapshot) :
       rw [hc, restoreList, restoreList, ih]
       cases restoreClause n ls <;> cases restoreList n tl <;> simp
 
-/-- Drop the holes of a snapshot, preserving the order of live clauses. The
+/ -- Drop the holes of a snapshot, preserving the order of live clauses. The
     leading `none` keeps the checker's `clauses[0] = none` layout invariant,
     so every live clause lands at a position ≥ 1 and stays addressable by
     LRAT hints (`0` terminates a hint list, so position 0 could never be
-    referenced). -/
+    referenced). - /
 def compactSnapshot (snap : Snapshot) : Snapshot :=
   none :: compactCore snap
 
@@ -393,9 +425,9 @@ private theorem toList_ofArray {n : Nat} (cs : Array (Option (DefaultClause n)))
   show DefaultFormula.toList (DefaultFormula.ofArray cs) = cs.toList.filterMap id
   simp [DefaultFormula.toList, DefaultFormula.ofArray]
 
-/-- Restoring a compacted snapshot yields the same model set as the state the
+/ -- Restoring a compacted snapshot yields the same model set as the state the
     snapshot was taken from: the compacting analogue of the verbatim
-    roundtrip. -/
+    roundtrip. - /
 theorem liff_restoreD_compactSnapshot_serialize {n : Nat} (f : DefaultFormula n)
     (hrup : f.rupUnits = #[]) (hrat : f.ratUnits = #[]) :
     Liff (PosFin n) (restoreD n (compactSnapshot (serialize f))) f := by
@@ -412,45 +444,45 @@ theorem liff_restoreD_compactSnapshot_serialize {n : Nat} (f : DefaultFormula n)
     simp [DefaultFormula.toList, hrup, hrat, List.filterMap_map]
   rw [ht]
 
-/-! ## Per-module step checks -/
+/ -! ## Per-module step checks - /
 
-/-- First chunk: start from `cnf` (as the core checker does) and check that
-    the chunk ends in the state imaged by `next`. -/
+/ -- First chunk: start from `cnf` (as the core checker does) and check that
+    the chunk ends in the state imaged by `next`. - /
 def stepStart (cnf : CNF Nat) (chunk : Array IntAction) (next : Snapshot) : Bool :=
   match runChunk (CNF.convertLRAT cnf) chunk 0 with
   | some (.more f') => serialize f' == next
   | _ => false
 
-/-- Middle chunk: resume from `prev`, check the chunk ends in `next`. -/
+/ -- Middle chunk: resume from `prev`, check the chunk ends in `next`. - /
 def stepMid (n : Nat) (prev : Snapshot) (chunk : Array IntAction) (next : Snapshot) : Bool :=
   match runChunk (restoreD n prev) chunk 0 with
   | some (.more f') => serialize f' == next
   | _ => false
 
-/-- Last chunk: resume from `prev`, the chunk must derive the empty clause. -/
+/ -- Last chunk: resume from `prev`, the chunk must derive the empty clause. - /
 def stepFinish (n : Nat) (prev : Snapshot) (chunk : Array IntAction) : Bool :=
   match runChunk (restoreD n prev) chunk 0 with
   | some .refuted => true
   | _ => false
 
-/-- Compacting variant of `stepStart`: the boundary snapshot is hole-free
+/ -- Compacting variant of `stepStart`: the boundary snapshot is hole-free
     (`compactSnapshot`), so the id space restarts at the live-clause count.
     The ids and hints of all subsequent chunks must be renumbered to the
     compacted positions — untrusted data preparation: a wrong renumbering
-    fails a step check, never succeeds. -/
+    fails a step check, never succeeds. - /
 def stepStartC (cnf : CNF Nat) (chunk : Array IntAction) (next : Snapshot) : Bool :=
   match runChunk (CNF.convertLRAT cnf) chunk 0 with
   | some (.more f') => compactSnapshot (serialize f') == next
   | _ => false
 
-/-- Compacting variant of `stepMid` (see `stepStartC`). `prev` may itself be
-    a compacted snapshot — `restoreD` does not care. -/
+/ -- Compacting variant of `stepMid` (see `stepStartC`). `prev` may itself be
+    a compacted snapshot — `restoreD` does not care. - /
 def stepMidC (n : Nat) (prev : Snapshot) (chunk : Array IntAction) (next : Snapshot) : Bool :=
   match runChunk (restoreD n prev) chunk 0 with
   | some (.more f') => compactSnapshot (serialize f') == next
   | _ => false
 
-/-! ## Step soundness (composes to `cnf.Unsat`, one `native_decide` per chunk) -/
+/ -! ## Step soundness (composes to `cnf.Unsat`, one `native_decide` per chunk) - /
 
 theorem stepStart_sound {cnf : CNF Nat} {chunk : Array IntAction} {next : Snapshot}
     (h : stepStart cnf chunk next = true) :
@@ -532,22 +564,22 @@ theorem stepMidC_sound {n : Nat} {prev : Snapshot} {chunk : Array IntAction} {ne
     exact (liff_unsat _ _ (liff_restoreD_compactSnapshot_serialize f' hu1 hu2)).mp hunsat
   next => simp at h
 
-/-! ## Externalization (presolve/derivation handoff)
+/ -! ## Externalization (presolve/derivation handoff)
 
 A chunk chain that ends in `more` (no empty clause) is a checked *derivation*
 `F ⊢ F′` — the certified-presolve primitive. `externSnap` turns the final
 snapshot into a `CNF Nat`, so the derived formula can be cubed and refuted
 with the existing cube-and-conquer machinery (`checkCover`); the bridge
 `extern_unsat_restoreD` transfers that refutation back to the snapshot state,
-and the step soundness lemmas carry it back to the original formula. -/
+and the step soundness lemmas carry it back to the original formula. - /
 
-/-- Externalize a snapshot as a `CNF Nat`: holes dropped, variables shifted
+/ -- Externalize a snapshot as a `CNF Nat`: holes dropped, variables shifted
     back to the 0-indexed convention of `parseDimacs` (so `CNF.dimacs` renders
-    it with the original DIMACS variable names). -/
+    it with the original DIMACS variable names). - /
 def externSnap (snap : Snapshot) : CNF Nat :=
   { clauses := (snap.filterMap (Option.map (List.map fun (v, b) => (v - 1, b)))).toArray }
 
-/-- A snapshot produced by a successful first step restores. -/
+/ -- A snapshot produced by a successful first step restores. - /
 theorem stepStart_restores {cnf : CNF Nat} {chunk : Array IntAction} {next : Snapshot}
     (h : stepStart cnf chunk next = true) :
     (restoreList (cnf.numLiterals + 1) next).isSome := by
@@ -558,7 +590,7 @@ theorem stepStart_restores {cnf : CNF Nat} {chunk : Array IntAction} {next : Sna
     rfl
   next => simp at h
 
-/-- A snapshot produced by a successful middle step restores. -/
+/ -- A snapshot produced by a successful middle step restores. - /
 theorem stepMid_restores {n : Nat} {prev : Snapshot} {chunk : Array IntAction} {next : Snapshot}
     (h : stepMid n prev chunk next = true) :
     (restoreList n next).isSome := by
@@ -661,9 +693,9 @@ private theorem extern_eval_of_restore {n : Nat} {p : PosFin n → Bool} :
       rw [eval_externSnap_cons_some, hhd, htl]
       rfl
 
-/-- **Externalization bridge**: refuting the externalized snapshot refutes the
+/ -- **Externalization bridge**: refuting the externalized snapshot refutes the
     restored checker state. The restorability side condition is supplied by
-    `stepStart_restores`/`stepMid_restores` for step-produced snapshots. -/
+    `stepStart_restores`/`stepMid_restores` for step-produced snapshots. - /
 theorem extern_unsat_restoreD {n : Nat} {snap : Snapshot}
     (hres : (restoreList n snap).isSome)
     (hx : (externSnap snap).Unsat) :
@@ -685,45 +717,47 @@ theorem extern_unsat_restoreD {n : Nat} {snap : Snapshot}
   rw [heval] at hfalse
   exact Bool.noConfusion hfalse
 
-/-- Derivation handoff, single-chunk derivation. -/
+/ -- Derivation handoff, single-chunk derivation. - /
 theorem stepStart_extern {cnf : CNF Nat} {chunk : Array IntAction} {next : Snapshot}
     (h : stepStart cnf chunk next = true) (hx : (externSnap next).Unsat) : cnf.Unsat :=
   stepStart_sound h (extern_unsat_restoreD (stepStart_restores h) hx)
 
-/-- Derivation handoff after one or more chunks: compose with
-    `stepMid_sound`/`stepStart_sound` down to the original formula. -/
+/ -- Derivation handoff after one or more chunks: compose with
+    `stepMid_sound`/`stepStart_sound` down to the original formula. - /
 theorem stepMid_extern {n : Nat} {prev : Snapshot} {chunk : Array IntAction} {next : Snapshot}
     (h : stepMid n prev chunk next = true) (hx : (externSnap next).Unsat) :
     Unsatisfiable (PosFin n) (restoreD n prev) :=
   stepMid_sound h (extern_unsat_restoreD (stepMid_restores h) hx)
 
-/-! ## Padding tautology (chained-derivation composition)
+/ -! ## Padding tautology (chained-derivation composition)
 
 When several derivations are chained (batch `i+1`'s base is batch `i`'s derived
 formula plus a padding tautology clause, as a *term* rather than a file), the
 padding clause `[v ∨ ¬v]` is a tautology satisfied by every assignment, so
 appending it never changes satisfiability. `unsat_of_append_pad` peels it back
-off, so downstream composition sees the *unpadded* base. -/
+off, so downstream composition sees the *unpadded* base. - /
 
-/-- The one-clause padding CNF `[[v, ¬v]]` — a tautology, satisfied by every
-    assignment (same `(var, polarity)` convention as `CNF`). -/
+/ -- The one-clause padding CNF `[[v, ¬v]]` — a tautology, satisfied by every
+    assignment (same `(var, polarity)` convention as `CNF`). - /
 def padCNF (v : Nat) : CNF Nat := { clauses := #[[(v, true), (v, false)]] }
 
-/-- The padding clause is a tautology: it evaluates to `true` under every
-    assignment. -/
+/ -- The padding clause is a tautology: it evaluates to `true` under every
+    assignment. - /
 theorem padCNF_eval (a : Nat → Bool) (v : Nat) : CNF.eval a (padCNF v) = true := by
   simp only [padCNF, CNF.eval, List.all_toArray, List.all_cons, List.all_nil,
     CNF.Clause.eval, List.any_cons, List.any_nil, Bool.and_true]
   cases a v <;> rfl
 
-/-- Appending the padding tautology never changes satisfiability, so a
+/ -- Appending the padding tautology never changes satisfiability, so a
     refutation of `F ++ padCNF v` is a refutation of `F`. Used to peel the
-    padding clause off a chained batch's base term. -/
+    padding clause off a chained batch's base term. - /
 theorem unsat_of_append_pad {F : CNF Nat} {v : Nat} :
     (F ++ padCNF v).Unsat → F.Unsat := by
   intro h a
   have hp := h a
   rw [CNF.eval_append, padCNF_eval, Bool.and_true] at hp
   exact hp
+
+-/
 
 end LRATCatcher
