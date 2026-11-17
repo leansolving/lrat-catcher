@@ -55,7 +55,7 @@ example {F : CNF Nat} (h : (F ++ padCNF 9).Unsat) : F.Unsat := unsat_of_append_p
 def f0 : String := "p cnf 2 4\n1 2 0\n-1 2 0\n1 -2 0\n-1 -2 0\n"
 def baseA : CNF Nat := parseDimacs f0
 /-- Snapshot after stage A's single chunk: `f0`'s clauses plus the derived `(2)`. -/
-def snapA : Snapshot := parseSnap ".\n2 1 0\n2 -1 0\n-2 1 0\n-2 -1 0\n2 0\n"
+def snapA : Snapshot := parseSnap ".\n1 2 0\n-1 2 0\n1 -2 0\n-1 -2 0\n2 0\n"
 
 -- Derive `(2)` by RUP: assume `¬2`; clause 1 `(1∨2)` gives `1`; clause 2
 -- `(¬1∨2)` then conflicts. Hints `[1, 2]`.
@@ -71,8 +71,9 @@ theorem derivA (hx : (externSnap snapA).Unsat) : baseA.Unsat :=
 /-- Batch B's base: stage A's derived formula plus a fresh padding clause
     `[3 ∨ ¬3]` (clause id 6). A Lean term — no file string embedded. -/
 def baseB : CNF Nat := externSnap snapA ++ padCNF 3
-/-- Snapshot after stage B's single chunk: `baseB` (minus tautology holes) plus `(1)`. -/
-def snapB : Snapshot := parseSnap ".\n2 1 0\n2 -1 0\n-2 1 0\n-2 -1 0\n2 0\n1 0\n"
+/-- Snapshot after stage B's single chunk: `baseB` (the padding clause keeps its
+    slot, id 6) plus `(1)` (id 7). -/
+def snapB : Snapshot := parseSnap ".\n1 2 0\n-1 2 0\n1 -2 0\n-1 -2 0\n2 0\n4 -4 0\n1 0\n"
 
 -- Derive `(1)` by RUP against `baseB`: assume `¬1`; clause 3 `(¬2∨1)` gives
 -- `¬2`; clause 5 `(2)` then conflicts. Hints `[3, 5]`.
