@@ -42,7 +42,7 @@ batch's emitted `fprime.cnf`; the generated `native_decide` re-check is the
 authority, so a term/file mismatch fails at build time, not soundness.
 
 Emits under `LRATCatcher/Generated/<Name>/`:
-  Base.lean     — `base : CNF Nat` (the DIMACS string + parser), `nv`
+  Base.lean     — `base : CNF Nat` (the DIMACS string + parser)
   Snap<j>.lean  — boundary snapshot `snap<j>` (compact text codec)
   Chunk<j>.lean — one `native_decide` step check
   Main.lean     — pure composition, no `native_decide`
@@ -139,7 +139,6 @@ def main (args : List String) : IO UInt32 := do
   let cnf := match padV with
     | some v => fileCNF ++ padCNF v
     | none => fileCNF
-  let nv := cnf.numLiterals + 1
   let modPrefix := s!"LRATCatcher.Generated.{name}"
   let dir := s!"LRATCatcher/Generated/{name}"
   try IO.FS.createDirAll dir
@@ -177,13 +176,12 @@ def main (args : List String) : IO UInt32 := do
   writeOut s!"{dir}/Base.lean" <| String.join
     [s!"import LRATCatcher.Stream\n{baseImport}\nopen Std.Sat LRATCatcher\n\nnamespace {modPrefix}\n\n",
      chainNote,
-     s!"def base : CNF Nat := {baseTerm}\n\n",
-     s!"def nv : Nat := base.numLiterals + 1\n\nend {modPrefix}\n"]
+     s!"def base : CNF Nat := {baseTerm}\n\nend {modPrefix}\n"]
 
   -- ---- stream the certificate, one chunk at a time ----
   let certH ← try IO.FS.Handle.mk certFile .read
     catch e => die s!"cannot read '{certFile}': {e}"
-  let mut f : DefaultFormula nv := CNF.convertLRAT cnf
+  let mut f : State := .ofCNF cnf
   let mut j : Nat := 0          -- chunks emitted
   let mut refuted := false
   repeat
@@ -204,7 +202,7 @@ def main (args : List String) : IO UInt32 := do
       writeOut s!"{dir}/Chunk{j}.lean" <| String.join
         [s!"import {modPrefix}.Base\nimport {modPrefix}.Snap{j-1}\n\n",
          s!"namespace {modPrefix}\n\nset_option maxHeartbeats 0 in\n",
-         s!"theorem step{j} : LRATCatcher.stepFinish nv snap{j-1}\n",
+         s!"theorem step{j} : LRATCatcher.stepFinish snap{j-1}\n",
          s!"    (LRATCatcher.parseActions \"{escLean text}\") = true := by native_decide\n\n",
          s!"end {modPrefix}\n"]
       refuted := true
@@ -226,7 +224,7 @@ def main (args : List String) : IO UInt32 := do
           s!"theorem step1 : LRATCatcher.stepStart base\n" ++
           s!"    (LRATCatcher.parseActions \"{escLean text}\") snap1 = true := by native_decide\n"
         else
-          s!"theorem step{j} : LRATCatcher.stepMid nv snap{j-1}\n" ++
+          s!"theorem step{j} : LRATCatcher.stepMid snap{j-1}\n" ++
           s!"    (LRATCatcher.parseActions \"{escLean text}\") snap{j} = true := by native_decide\n"
       let imports :=
         if j == 1 then s!"import {modPrefix}.Base\nimport {modPrefix}.Snap1\n"
