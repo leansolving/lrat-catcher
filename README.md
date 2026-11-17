@@ -1,7 +1,7 @@
 # lrat-catcher
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Lean 4](https://img.shields.io/badge/Lean-v4.30.0-blue.svg)](https://lean-lang.org/)
+[![Lean 4](https://img.shields.io/badge/Lean-v4.36.0-blue.svg)](https://lean-lang.org/)
 
 Import SAT solver certificates into Lean 4 as theorems, by reflection.
 
@@ -18,7 +18,7 @@ There is no Mathlib dependency.
 
 ## Requirements
 
-- **Lean 4**, version pinned by `lean-toolchain` (currently `v4.30.0`).
+- **Lean 4**, version pinned by `lean-toolchain` (currently `v4.36.0`).
   Install [`elan`](https://github.com/leanprover/elan); `lake` fetches the
   toolchain on first build.
 - **A SAT solver**, needed by the commands that run the solver at build time
@@ -191,7 +191,7 @@ them.
 (cnf) "path" K` and `lratcatch-cover-stream --compact K` check a stream with
 `checkStreamCnfC`, which every `K` feed blocks drops the deleted slots from
 the clause array and shifts the live clauses down (`compactSnapshot`; the
-model set is preserved, `liff_restoreD_compactSnapshot_serialize`). The
+clause list is preserved, `toCNF_restoreD_compactSnapshot_serialize`). The
 certificate must then carry ids and hints renumbered to the compacted
 positions: `lratcatch-compact-renumber base.cnf in.lrat out.lrat K` does this
 streaming, line by line, with the same `K` and block size (`-` for
