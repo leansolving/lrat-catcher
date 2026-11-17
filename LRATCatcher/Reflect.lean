@@ -105,9 +105,11 @@ def validateDimacs (path : String) (s : String) : CommandElabM Unit := do
 
 In kernel mode the certificate is parsed at elaboration time and embedded as
 a `List IntAction` term, so the kernel evaluates only the checker, never the
-ByteArray parser. Wrong actions can only make the check fail, so this is
-sound. Integers are quoted as `Int.ofNat`/`Int.negSucc` constructor literals,
-which the kernel consumes without `OfNat` unfolding. -/
+ByteArray parser. This is sound: wrong actions cannot establish a false
+refutation; they may make the check fail, or they may describe another valid
+deduction, which the check then accepts. Integers are quoted as
+`Int.ofNat`/`Int.negSucc` constructor literals, which the kernel consumes
+without `OfNat` unfolding. -/
 
 private instance : Quote Int where
   quote

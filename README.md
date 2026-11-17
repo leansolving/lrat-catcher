@@ -49,13 +49,19 @@ lake build LRATCatcher.Tests.ReflectTest     # one worked example
 `LRATCatcher/Tests/`, each built by name; to build them all:
 
 ```sh
-for t in ReflectTest CoverTest KernelTest DecideTest LeafBench SchurTest RamseyTest; do
+for t in ReflectTest CoverTest KernelTest DecideTest LeafBench SchurTest RamseyTest \
+         ValidateTest StreamTest StreamCmdTest TwoStreamTest PresolveTest \
+         StreamChainPadTest RatTest SnapshotEdgeTest; do
   lake build LRATCatcher.Tests.$t
 done
+scripts/stream_fifo.sh 3    # StreamOracleTest, certificate streamed through a FIFO
 ```
 
-`DecideTest` and `LeafBench` invoke the solver at build time (`LeafBench`
-solves PHP(10,9) and takes ~10 s); the others replay shipped certificates.
+`DecideTest`, `LeafBench` and `StreamCmdTest` invoke the solver at build time
+(`LeafBench` solves PHP(10,9) and takes ~10 s); the others replay shipped
+certificates. `StreamOracleTest` reads its certificate from the stream named by
+`LRATCATCHER_STREAM_PATH` and fails without it by design;
+`scripts/stream_fifo.sh` sets it to a FIFO that `cadical` writes into.
 
 ## Usage
 
@@ -197,7 +203,9 @@ certificate must then carry ids and hints renumbered to the compacted
 positions: `lratcatch-compact-renumber base.cnf in.lrat out.lrat K` does this
 streaming, line by line, with the same `K` and block size (`-` for
 stdin/stdout, so it sits in a `zstd` pipeline). `K` is part of the checked
-statement; a wrong renumbering fails the check and can never make it succeed.
+statement. A wrong renumbering cannot establish a false refutation: it may make
+the check fail, or it may describe another valid deduction, which the check then
+accepts.
 A related tool, `lratcatch-normalize base.cnf in.lrat out.lrat`, rewrites
 certificates whose addition ids have gaps (as `drat-trim -L` produces) to the
 dense numbering the core checker expects.

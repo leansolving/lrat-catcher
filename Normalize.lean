@@ -19,13 +19,15 @@ import Std.Tactic.BVDecide.LRAT
   * every hint id `> nBase` is remapped through the original→dense table
     (ids `≤ nBase` are base-clause positions and pass through unchanged;
     a hint referring to a lemma that never appeared is left as-is — the
-    checker will then reject the certificate, which is the correct fail-safe
-    behavior for a genuinely broken file);
+    checker rejects such a hint unless the number happens to be the position
+    of a live clause, in which case it checks the step against that clause);
   * deletions of ids that were never added (drat-trim's skipped lemmas) are
     dropped; remaining deletion ids are remapped.
 
-  The output is untrusted plumbing: a wrong rewrite can only make the
-  checker reject, never accept an invalid certificate.
+  The output is untrusted plumbing: the checker re-checks every step, so a
+  wrong rewrite cannot establish a false refutation. It may make the check
+  fail, or it may describe another valid deduction, which the check then
+  accepts.
 
   Usage: `lratcatch-normalize base.cnf in.lrat out.lrat`
 
@@ -42,7 +44,8 @@ open Std.Tactic.BVDecide.LRAT (IntAction parseLRATProof)
 namespace LRATCatcher.Normalize
 
 /-- Remap one hint id: base positions pass through, lemma ids go through the
-    table, unknown ids stay (fail-safe: the checker rejects them). -/
+    table, unknown ids stay (the checker rejects such a hint unless the number
+    happens to be the position of a live clause). -/
 @[inline] def remapHint (nBase : Nat) (map : Std.HashMap Nat Nat) (h : Nat) : Nat :=
   if h ≤ nBase then h else map.getD h h
 

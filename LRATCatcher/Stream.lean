@@ -194,8 +194,9 @@ abbrev Snapshot := List (Option (List (Nat × Bool)))
 /-- Render a snapshot as text: one line per clause position — `.` for a hole,
     otherwise the clause as signed integers terminated by `0` (variable =
     original DIMACS variable, sign = polarity). Snapshots are untrusted data
-    plumbing (a wrong snapshot fails the Boolean step checks), so the codec
-    needs no round-trip proof. -/
+    plumbing (a wrong snapshot cannot establish a false refutation: it may fail
+    a Boolean step check, or it may describe another valid deduction, which the
+    step checks then accept), so the codec needs no round-trip proof. -/
 def printSnap (snap : Snapshot) : String :=
   String.join <| snap.map fun
     | none => ".\n"
@@ -259,8 +260,9 @@ preserved). A compacted snapshot restores to a state with the same clause
 list as the state it was taken from, so unsatisfiability transfers across a
 compacting boundary exactly as across a verbatim boundary. Positions shift,
 so the ids and hints of all subsequent chunks must be renumbered to match;
-that renumbering is data preparation, not trusted code — a wrong id or hint
-makes the per-chunk check fail, never succeed. -/
+that renumbering is data preparation, not trusted code: a wrong id or hint
+cannot establish a false refutation. It may make the per-chunk check fail, or
+it may describe another valid deduction, which the check then accepts. -/
 
 /-- Drop the holes of a snapshot, preserving the order of live clauses. The
     leading `none` stands for id `0`, so the `r`-th live clause lands at
@@ -309,7 +311,8 @@ def stepFinish (prev : Snapshot) (chunk : Array IntAction) : Bool :=
     (`compactSnapshot`), so the id space restarts at the live-clause count.
     The ids and hints of all subsequent chunks must be renumbered to the
     compacted positions — untrusted data preparation: a wrong renumbering
-    fails a step check, never succeeds. -/
+    cannot establish a false refutation; it may fail a step check, or it may
+    describe another valid deduction, which the step check then accepts. -/
 def stepStartC (cnf : CNF Nat) (chunk : Array IntAction) (next : Snapshot) : Bool :=
   match runChunk (.ofCNF cnf) chunk 0 with
   | some (.more s') => compactSnapshot (serialize s') == next

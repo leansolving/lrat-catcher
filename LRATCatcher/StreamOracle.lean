@@ -99,7 +99,9 @@ restore. The clause list is preserved exactly
 (`toCNF_restoreD_compactSnapshot_serialize`), so soundness composes as before.
 The feed must supply ids and hints renumbered to the compacted positions —
 untrusted data preparation (`lratcatch-compact-renumber` for files/archives):
-a wrong renumbering fails the check, never succeeds. -/
+a wrong renumbering cannot establish a false refutation; it may make the check
+fail, or it may describe another valid deduction, which the check then
+accepts. -/
 
 /-- The state handed to the next block: compacted when `k` divides `i` (the
     1-based count of blocks processed so far), unchanged otherwise. `k = 0`
@@ -169,8 +171,10 @@ def streamFuel : Nat := 1 <<< 24
 
 /-- Lines per feed call. `LRATCATCHER_STREAM_BLOCK` overrides (used by tests
     to exercise compaction on small certificates, and it must match the
-    block size the compact-renumber tool assumed). The value never affects
-    soundness — any blocking is checked; a mismatch fails the check. -/
+    block size the compact-renumber tool assumed). The value does not affect
+    soundness, since every block is checked: a mismatch cannot establish a
+    false refutation; it may make the check fail, or it may describe another
+    valid deduction, which the check then accepts. -/
 private def blockLines : Nat := 4096
 
 private initialize streamHandle : IO.Ref (Option IO.FS.Handle) ← IO.mkRef none
@@ -452,8 +456,9 @@ open Lean Elab Command in
     (`checkStreamCnfC`), so memory tracks the live clause set instead of the
     id space. The stream at `path` must be the certificate *pre-renumbered*
     to the compacted positions (`lratcatch-compact-renumber`, same `k` and
-    block size); a mismatch fails the check. `k` is part of the checked
-    statement. -/
+    block size); a mismatch cannot establish a false refutation (it may make
+    the check fail, or it may describe another valid deduction, which the
+    check then accepts). `k` is part of the checked statement. -/
 elab "lrat_stream_cnf_compact " n:ident ppSpace t:term:max ppSpace path:str ppSpace k:num : command => do
   let kLit := Syntax.mkNatLit k.getNat
   let feedId := mkIdentFrom n (n.getId.appendAfter "_feed")
