@@ -27,13 +27,14 @@ Two modes:
 
 Usage:
   lratcatch-stream-gen (chunk|derive) base.cnf cert.lrat Name chunkLines
-      [--delete-cert] [--pad <v>] [--chain-prev <FullModuleName> <snapDefName>]
+      [--delete-cert] [--chain-prev <FullModuleName> <snapDefName>]
 
-`--pad <v>` (derive mode): check against `base ++ [v ∨ ¬v]` (a padding
-tautology, highest clause id) and emit `base := <file> ++ padCNF v`, plus
-`deriv_transfer'` which peels the pad back off to the unpadded base — the
-chained-batch convention where batch i+1's base is batch i's derived formula
-plus a fresh padding clause.
+`--pad <v>` is refused with an error. Padding a base with a tautology on a
+fresh variable was needed for the variable bound of the LRAT checker of earlier
+Lean versions; the checker of this toolchain has no variable bound. Its padding
+clause would also take a position (clause ids are push positions), so a
+certificate numbered for a padded base (additions numbered from #base+1, the
+padding clause without an id) is imported without `--pad`.
 
 `--chain-prev <Mod> <snap>` (derive mode): `base := externSnap Mod.snap`
 (a Lean *term*, no file string; `Mod` imported). The tool still reads
@@ -93,25 +94,32 @@ def readBlock (h : IO.FS.Handle) (k : Nat) : IO String := do
 def dropLastComponent (m : String) : String :=
   String.intercalate "." (m.splitOn ".").dropLast
 
+/-- The error for `--pad`: padding is not needed on this toolchain, and a
+    padding clause would shift the position of every added clause. -/
+def padRefused : String :=
+  "--pad is not supported: the LRAT checker of this toolchain has no variable bound, " ++
+  "so a padding tautology is not needed. A padding clause would also take a clause " ++
+  "position and shift every added clause by one, so a certificate numbered for a " ++
+  "padded base (additions numbered from #base+1, the padding clause without an id) " ++
+  "must be imported without --pad."
+
 /-- Parse the optional trailing flags after the five positional arguments:
-    `--delete-cert`, `--pad <v>`, `--chain-prev <FullModuleName> <snapDefName>`
-    (in any order). Returns `(deleteCert, padVar?, chainPrev?)`. -/
+    `--delete-cert`, `--chain-prev <FullModuleName> <snapDefName>` (in any
+    order); `--pad` is refused (`padRefused`). Returns `(deleteCert, chainPrev?)`. -/
 partial def parseFlags :
-    List String → Bool → Option Nat → Option (String × String) →
-    IO (Bool × Option Nat × Option (String × String))
-  | [], d, p, c => pure (d, p, c)
-  | "--delete-cert" :: rest, _, p, c => parseFlags rest true p c
-  | "--pad" :: v :: rest, d, _, c => do
-      let some vn := v.toNat? | die s!"--pad expects a number, got '{v}'"
-      parseFlags rest d (some vn) c
-  | "--chain-prev" :: m :: s :: rest, d, p, _ =>
+    List String → Bool → Option (String × String) →
+    IO (Bool × Option (String × String))
+  | [], d, c => pure (d, c)
+  | "--delete-cert" :: rest, _, c => parseFlags rest true c
+  | "--pad" :: _, _, _ => die padRefused
+  | "--chain-prev" :: m :: s :: rest, d, _ =>
       if m.isEmpty || s.isEmpty || (m.splitOn ".").dropLast.isEmpty then
         die s!"--chain-prev expects <FullModuleName> <snapDefName>, and FullModuleName must be dotted (got '{m}' '{s}')"
-      else parseFlags rest d p (some (m, s))
-  | other, _, _, _ => die s!"unrecognized trailing arguments: {other}"
+      else parseFlags rest d (some (m, s))
+  | other, _, _ => die s!"unrecognized trailing arguments: {other}"
 
 def main (args : List String) : IO UInt32 := do
-  let usage := "usage: lratcatch-stream-gen (chunk|derive) base.cnf cert.lrat Name chunkLines [--delete-cert] [--pad <v>] [--chain-prev <FullModuleName> <snapDefName>]"
+  let usage := "usage: lratcatch-stream-gen (chunk|derive) base.cnf cert.lrat Name chunkLines [--delete-cert] [--chain-prev <FullModuleName> <snapDefName>]"
   let (mode, baseFile, certFile, name, chunkArg, rest) ←
     match args with
     | m :: b :: c :: n :: k :: r => pure (m, b, c, n, k, r)
@@ -121,9 +129,9 @@ def main (args : List String) : IO UInt32 := do
     | "chunk" => pure false
     | "derive" => pure true
     | _ => die usage
-  let (deleteCert, padV, chainPrev) ← parseFlags rest false none none
-  if (padV.isSome || chainPrev.isSome) && !deriveMode then
-    die "--pad and --chain-prev are derive-mode only (they peel/replace the base term of a chained derivation)"
+  let (deleteCert, chainPrev) ← parseFlags rest false none
+  if chainPrev.isSome && !deriveMode then
+    die "--chain-prev is derive-mode only (it replaces the base term of a chained derivation)"
   let some chunkLines := chunkArg.toNat? | die "chunkLines must be a number"
   if chunkLines == 0 then die "chunkLines must be ≥ 1"
   if name.isEmpty || name.front.isDigit
@@ -131,14 +139,8 @@ def main (args : List String) : IO UInt32 := do
     die s!"Name '{name}' must be a Lean identifier component (letters, digits, '_'; not digit-initial)"
 
   let baseStr ← readInput baseFile
-  -- The formula the certificate is checked against. With `--pad v`, append the
-  -- padding tautology `[v ∨ ¬v]` (highest clause id) so the internal pre-check
-  -- and the emitted `base` term agree with a certificate produced against the
-  -- *padded* formula (the chained-batch convention).
-  let fileCNF := parseDimacs baseStr
-  let cnf := match padV with
-    | some v => fileCNF ++ padCNF v
-    | none => fileCNF
+  -- The formula the certificate is checked against.
+  let cnf := parseDimacs baseStr
   let modPrefix := s!"LRATCatcher.Generated.{name}"
   let dir := s!"LRATCatcher/Generated/{name}"
   try IO.FS.createDirAll dir
@@ -147,17 +149,13 @@ def main (args : List String) : IO UInt32 := do
   -- The base term as it is emitted in Base.lean.  Without `--chain-prev` it is
   -- the DIMACS file embedded as a string + parser; with `--chain-prev M s` it
   -- is `externSnap M.s` (M imported, s its snapshot def, in M's namespace) — no
-  -- file string embedded.  `baseTermUnpadded` is the term before the optional
-  -- padding clause; `deriv_transfer'` peels the pad back off down to it.
+  -- file string embedded.
   let baseImport := match chainPrev with
     | some (m, _) => s!"import {m}\n"
     | none => ""
-  let baseTermUnpadded := match chainPrev with
+  let baseTerm := match chainPrev with
     | some (m, s) => s!"LRATCatcher.externSnap {dropLastComponent m}.{s}"
     | none => s!"LRATCatcher.parseDimacs \"{escLean baseStr}\""
-  let baseTerm := match padV with
-    | some v => s!"{baseTermUnpadded} ++ LRATCatcher.padCNF {v}"
-    | none => baseTermUnpadded
   -- `--chain-prev`: the base term is the previous batch's derived formula, which
   -- lives only as a Lean term.  The tool re-reads it from `base.cnf` for its
   -- streaming pre-check, so the caller MUST pass the previous batch's emitted
@@ -276,16 +274,6 @@ def main (args : List String) : IO UInt32 := do
        s!"    `externSnap snap{m}` (see `fprime.cnf`) refutes `base`. -/\n",
        s!"theorem deriv_transfer (hx : (LRATCatcher.externSnap snap{m}).Unsat) : base.Unsat :=\n",
        s!"  {inner}\n\n#print axioms deriv_transfer\n\n"]
-    -- With `--pad`, also expose the transfer to the *unpadded* base term, so a
-    -- downstream chain sees the base without the padding tautology clause.
-    if padV.isSome then
-      mainParts := mainParts.push <| String.join
-        [s!"/-- The padding tautology peeled off: refuting `externSnap snap{m}`\n",
-         s!"    refutes the unpadded base. -/\n",
-         s!"theorem deriv_transfer' (hx : (LRATCatcher.externSnap snap{m}).Unsat) :\n",
-         s!"    ({baseTermUnpadded}).Unsat :=\n",
-         s!"  LRATCatcher.unsat_of_append_pad (deriv_transfer hx)\n\n",
-         s!"#print axioms deriv_transfer'\n\n"]
     mainParts := mainParts.push s!"end {modPrefix}\n"
   else
     mainParts := mainParts.push <| String.join

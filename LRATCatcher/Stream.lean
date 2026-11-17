@@ -408,13 +408,17 @@ theorem stepMid_extern {prev : Snapshot} {chunk : Array IntAction} {next : Snaps
     (restoreD prev).toCNF.Unsat :=
   stepMid_sound h (extern_unsat_restoreD hx)
 
-/-! ## Padding tautology (chained-derivation composition)
+/-! ## Padding tautology
 
-When several derivations are chained (batch `i+1`'s base is batch `i`'s derived
-formula plus a padding tautology clause, as a *term* rather than a file), the
-padding clause `[v ∨ ¬v]` is a tautology satisfied by every assignment, so
-appending it never changes satisfiability. `unsat_of_append_pad` peels it back
-off, so downstream composition sees the *unpadded* base. -/
+Earlier Lean versions bounded the variables of the LRAT checker, so chained
+derivations whose certificates introduce fresh variables padded their base with
+a tautology `[v ∨ ¬v]` (batch `i+1`'s base = batch `i`'s derived formula plus
+the padding clause, as a *term*). The checker of this toolchain has no variable
+bound, and a padding clause takes a clause position, which shifts the id of
+every added clause; `lratcatch-stream-gen` therefore no longer pads (`--pad` is
+refused). The lemmas stay: the padding clause is satisfied by every assignment,
+so appending it never changes satisfiability, and `unsat_of_append_pad` peels
+it back off a refutation of a padded term. -/
 
 /-- The one-clause padding CNF `[[v, ¬v]]` — a tautology, satisfied by every
     assignment (same `(var, polarity)` convention as `CNF`). -/
@@ -428,8 +432,7 @@ theorem padCNF_eval (a : Nat → Bool) (v : Nat) : CNF.eval a (padCNF v) = true 
   cases a v <;> rfl
 
 /-- Appending the padding tautology never changes satisfiability, so a
-    refutation of `F ++ padCNF v` is a refutation of `F`. Used to peel the
-    padding clause off a chained batch's base term. -/
+    refutation of `F ++ padCNF v` is a refutation of `F`. -/
 theorem unsat_of_append_pad {F : CNF Nat} {v : Nat} :
     (F ++ padCNF v).Unsat → F.Unsat := by
   intro h a
