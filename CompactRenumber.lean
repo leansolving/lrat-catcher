@@ -13,7 +13,8 @@ map in memory, so it handles certificates far larger than RAM (pipe through
 `zstd` for archives).
 
 The output is untrusted plumbing: the import re-checks every step, so a wrong
-rewrite can only make the check fail, never make it succeed.
+rewrite cannot establish a false refutation. It may make the check fail, or it
+may describe another valid deduction, which the check then accepts.
 
 The tool mirrors the checker's state exactly:
 
@@ -28,8 +29,9 @@ The tool mirrors the checker's state exactly:
   exactly the `compactSnapshot` the checker performs at that boundary.
 
 Every input line yields exactly one output line (blocking is line-based, so
-line counts must be preserved); unknown ids pass through unchanged (fail-safe:
-the checker rejects them).
+line counts must be preserved); unknown ids pass through unchanged (the checker
+rejects such a hint unless the number happens to be the position of a live
+clause, in which case it checks the step against that clause).
 
 The base must contain no tautological (complementary-literal) and no
 duplicate-literal clauses: the core converter silently drops clauses it cannot
@@ -95,7 +97,7 @@ def rewriteLine (st : St) (line : String) : String × St := Id.run do
           | some p =>
             st := { st with posOf := st.posOf.erase i, idAt := st.idAt.erase p }
             out := toString p :: out
-          | none => out := tok :: out   -- unknown id: fail-safe pass-through
+          | none => out := tok :: out   -- unknown id: passed through unchanged
         | none => out := tok :: out
       return (String.intercalate " " out.reverse, st)
     | _ =>
