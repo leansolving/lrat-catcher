@@ -31,12 +31,14 @@ There is no Mathlib dependency.
   Every other command, including the showcase tests, replays an existing
   `.lrat` file and needs no solver.
 
-The core LRAT checker does not support bounded variable addition (BVA), which
-CaDiCaL 3 performs as "factoring": it introduces extension variables, and
-certificates that use them are soundly rejected. With CaDiCaL 3 and later,
-generate certificates with `cadical --lrat --no-binary --no-factor`;
-`lrat_decide` and `lrat_stream` add `--no-factor` automatically. The bundled
-CaDiCaL (2.x) does not factor.
+Certificates with extension variables, as CaDiCaL 3 produces with bounded
+variable addition ("factoring", option `--factor`), are checked like any other:
+the LRAT checker of Lean v4.36.0 has no variable bound (the checker of earlier
+Lean versions had one and rejected them). `--no-factor` is therefore optional;
+`lrat_decide` and `lrat_stream` call the solver with `--lrat` only. The
+bundled CaDiCaL (2.x) does not factor, and CaDiCaL 3.0.1 factors only when
+`--factor` is given. `LRATCatcher/Tests/FactorTest.lean` imports a certificate
+with extension variables.
 
 ## Build
 
@@ -51,7 +53,7 @@ lake build LRATCatcher.Tests.ReflectTest     # one worked example
 ```sh
 for t in ReflectTest CoverTest KernelTest DecideTest LeafBench SchurTest RamseyTest \
          ValidateTest StreamTest StreamCmdTest TwoStreamTest PresolveTest \
-         StreamChainPadTest RatTest SnapshotEdgeTest; do
+         StreamChainPadTest RatTest SnapshotEdgeTest FactorTest; do
   lake build LRATCatcher.Tests.$t
 done
 scripts/stream_fifo.sh 3    # StreamOracleTest, certificate streamed through a FIFO

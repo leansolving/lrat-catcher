@@ -36,8 +36,10 @@ scale, with the same tools, in the same order.
 5. **Solving.** `cadical --lrat --no-factor` refutes each leaf and writes a
    binary LRAT certificate `leaves/leaf<i>` (2 to 65 MB each; the four cubes
    that leave the number 1 with a single colour are the hard ones, about 20 s
-   each on a laptop). `--no-factor` is required with CaDiCaL 3: its factoring
-   step introduces extension variables the core checker rejects.
+   each on a laptop). `--no-factor` is optional: the checker of Lean v4.36.0 has
+   no variable bound and checks certificates with the extension variables of
+   factoring like any other (the checker of earlier Lean versions rejected
+   them).
 6. **Cover certificate.** The same solver refutes `negcubes.cnf` (118 bytes of
    ASCII LRAT, `cover.lrat`): the cubes are exhaustive.
 7. **Module generation.** `lratcatch-cover-stream ... --base-term

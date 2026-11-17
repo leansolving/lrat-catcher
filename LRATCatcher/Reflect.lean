@@ -31,9 +31,10 @@ import Lean
   `touch` is not sufficient (Lake caches by content hash, and replays failed
   builds too), so a stale `.olean` would keep the previously embedded contents.
 
-  Solver invocation: certificates with extension variables (e.g. from
-  CaDiCaL's bounded variable addition) are soundly *rejected* by the core
-  checker; produce certificates with `cadical --lrat --no-binary --no-factor`.
+  Solver invocation: produce certificates with `cadical --lrat --no-binary`.
+  Certificates that introduce extension variables (CaDiCaL's bounded variable
+  addition, option `--factor`) are checked like any other, since the checker
+  of this toolchain has no variable bound; `--no-factor` is optional.
 -/
 
 open Lean Elab Command
@@ -202,11 +203,11 @@ elab "lrat_reflect_cnf " "+" noWs &"kernel" ppSpace n:ident ppSpace "(" cnfTerm:
 /-- The SAT solver for `lrat_decide` and `lrat_stream`, resolved as
     `bv_decide` does: the `LRATCATCHER_SOLVER` environment variable if set
     and nonempty, else the CaDiCaL binary bundled with the Lean toolchain
-    (next to the running executable), else `cadical` on `PATH`. Returns the solver and
-    its flags: `--lrat`, plus `--no-factor` for cadical ≥ 3, whose factoring
-    (bounded variable addition) introduces extension variables that the core
-    checker soundly rejects; older versions, including the bundled one, do
-    not factor and lack the flag. -/
+    (next to the running executable), else `cadical` on `PATH`. Returns the
+    solver, its version string and its flags: `--lrat`. Factoring (bounded
+    variable addition, CaDiCaL ≥ 3) needs no flag: the checker has no variable
+    bound, so certificates with extension variables are checked like any
+    other. -/
 def solverAndFlags : IO (String × String × Array String) := do
   let solver ← match (← IO.getEnv "LRATCATCHER_SOLVER").filter (· ≠ "") with
     | some s => pure s
@@ -216,10 +217,7 @@ def solverAndFlags : IO (String × String × Array String) := do
       pure (if ← bundled.pathExists then bundled.toString else "cadical")
   let verOut ← IO.Process.output { cmd := solver, args := #["--version"] }
   let ver := verOut.stdout.trimAscii.toString
-  let mut flags := #["--lrat"]
-  if (ver.takeWhile (· != '.')).toNat?.all (· ≥ 3) then
-    flags := flags.push "--no-factor"
-  return (solver, ver, flags)
+  return (solver, ver, #["--lrat"])
 
 /-- Run the SAT solver (see `solverAndFlags`) on `cnfPath` at elaboration
     time, writing an ASCII LRAT certificate to `lratPath`. Expects UNSAT
