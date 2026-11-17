@@ -180,27 +180,28 @@ def parseActions (s : String) : Array IntAction :=
   | .ok p => p.map normalizeAction
   | .error _ => #[]
 
-/- PORT (v4.36.0): A3/A4 in progress
-/ -! ## Snapshots - /
+/-! ## Snapshots -/
 
-/ -- Plain-data image of a checker state between chunks: clause literal lists,
-    with `none` holes preserved (clause IDs are positions). - /
+/-- Plain-data image of a checker state between chunks: position `i` holds
+    the clause with id `i` as a literal list, `none` where there is no live
+    clause (deleted ids, and id `0`, which no clause has). Variables are
+    1-based, as in DIMACS. -/
 abbrev Snapshot := List (Option (List (Nat × Bool)))
 
-/ -- Render a snapshot as text: one line per clause position — `.` for a hole,
+/-- Render a snapshot as text: one line per clause position — `.` for a hole,
     otherwise the clause as signed integers terminated by `0` (variable =
-    `PosFin` value = original DIMACS variable, sign = polarity). Snapshots are
-    untrusted data plumbing (a wrong snapshot fails the Boolean step checks),
-    so the codec needs no round-trip proof. - /
+    original DIMACS variable, sign = polarity). Snapshots are untrusted data
+    plumbing (a wrong snapshot fails the Boolean step checks), so the codec
+    needs no round-trip proof. -/
 def printSnap (snap : Snapshot) : String :=
   String.join <| snap.map fun
     | none => ".\n"
     | some ls =>
       String.join (ls.map fun (v, b) => if b then s!"{v} " else s!"-{v} ") ++ "0\n"
 
-/ -- Parse a `printSnap` rendering: `.` lines are holes, other lines are read
+/-- Parse a `printSnap` rendering: `.` lines are holes, other lines are read
     as signed integers up to the terminating `0`; blank lines and non-integer
-    tokens are ignored. - /
+    tokens are ignored. -/
 def parseSnap (s : String) : Snapshot := Id.run do
   let mut snap : Snapshot := []
   for line in s.splitOn "\n" do
@@ -219,231 +220,68 @@ def parseSnap (s : String) : Snapshot := Id.run do
       snap := some ls.reverse :: snap
   return snap.reverse
 
-/ -- Strip a clause database down to plain data (positions preserved). - /
-def serialize {n : Nat} (f : DefaultFormula n) : Snapshot :=
-  (f.clauses.map (Option.map fun c => c.clause.map fun l => (l.1.val, l.2))).toList
+/-- Strip a checker state down to plain data. The core checker stores the
+    clause with id `i` in slot `i - 1`; the leading hole shifts this so that
+    snapshot position `i` is id `i`, and variables are written 1-based. -/
+def serialize (s : State) : Snapshot :=
+  none :: (s.formula.map (Option.map fun c => c.literals.map fun l => (l.1 + 1, l.2))).toList
 
-/ -- Rebuild literals over `PosFin n`; fails on out-of-range variables. - /
-def restoreLits (n : Nat) : List (Nat × Bool) → Option (List (Literal (PosFin n)))
-  | [] => some []
-  | (v, b) :: rest =>
-    if h : 0 < v ∧ v < n then
-      (restoreLits n rest).map (fun ls => (⟨v, h⟩, b) :: ls)
-    else
-      none
+/-- Rebuild one clause from its snapshot literals (variables shifted back to
+    0-based). -/
+def restoreClause (ls : List (Nat × Bool)) : CNF.Clause Nat :=
+  .ofLiterals (ls.map fun l => (l.1 - 1, l.2))
 
-private theorem nodupkey_of_no_compl {n : Nat} {ls : List (Literal (PosFin n))}
-    (h : ∀ l ∈ ls, (l.1, !l.2) ∉ ls) :
-    ∀ l : PosFin n, (l, true) ∉ ls ∨ (l, false) ∉ ls := by
-  intro l
-  by_cases h1 : (l, true) ∈ ls
-  · exact Or.inr (by simpa using h (l, true) h1)
-  · exact Or.inl h1
+/-- Restore a checker state from a snapshot: drop position `0`, rebuild each
+    clause. Total: every snapshot restores to some state, which is sound
+    because the soundness lemmas only ever *assume* unsatisfiability of a
+    restored state. -/
+def restoreD (snap : Snapshot) : State :=
+  ⟨snap.tail.toArray.map (Option.map restoreClause)⟩
 
-/ -- Rebuild one clause; fails on out-of-range, duplicate, or complementary
-    literals (`serialize` output always passes). - /
-def restoreClause (n : Nat) (ls0 : List (Nat × Bool)) : Option (DefaultClause n) := do
-  let ls ← restoreLits n ls0
-  if h : ls.Nodup ∧ ∀ l ∈ ls, (l.1, !l.2) ∉ ls then
-    some ⟨ls, nodupkey_of_no_compl h.2, h.1⟩
-  else
-    none
+theorem restoreClause_serialize (c : CNF.Clause Nat) :
+    restoreClause (c.literals.map fun l => (l.1 + 1, l.2)) = c := by
+  simp [restoreClause, List.map_map, Function.comp_def]
 
-/ -- Rebuild the clause array from a snapshot, position by position. - /
-def restoreList (n : Nat) : Snapshot → Option (List (Option (DefaultClause n)))
-  | [] => some []
-  | none :: rest => (restoreList n rest).map (none :: ·)
-  | some ls :: rest => do
-    let c ← restoreClause n ls
-    let cs ← restoreList n rest
-    return some c :: cs
+/-- **Roundtrip**: restoring a serialized state gives the state back. -/
+theorem restoreD_serialize (s : State) : restoreD (serialize s) = s := by
+  obtain ⟨formula⟩ := s
+  simp [restoreD, serialize, Function.comp_def, Option.map_map, restoreClause_serialize]
 
-/ -- Tail-recursive `restoreList`, substituted at compilation (`@[csimp]`).
-    Snapshots keep one position per clause *id* (holes included), so at
-    GB-certificate scale they have millions of positions and the naive
-    recursion overflows the native stack (SIGABRT inside `native_decide`). - /
-private def restoreListTR (n : Nat) : Snapshot → Option (List (Option (DefaultClause n))) :=
-  go #[]
-where
-  go (acc : Array (Option (DefaultClause n))) :
-      Snapshot → Option (List (Option (DefaultClause n)))
-  | [] => some acc.toList
-  | none :: rest => go (acc.push none) rest
-  | some ls :: rest =>
-    match restoreClause n ls with
-    | some c => go (acc.push (some c)) rest
-    | none => none
-
-private theorem restoreListTR.go_eq {n : Nat} (snap : Snapshot)
-    (acc : Array (Option (DefaultClause n))) :
-    restoreListTR.go n acc snap = (restoreList n snap).map (acc.toList ++ ·) := by
-  induction snap generalizing acc with
-  | nil => simp [restoreListTR.go, restoreList]
-  | cons hd tl ih =>
-    cases hd with
-    | none =>
-      rw [restoreListTR.go, ih, restoreList]
-      cases restoreList n tl <;> simp
-    | some ls =>
-      rw [restoreListTR.go]
-      cases hc : restoreClause n ls with
-      | none => simp [restoreList, hc]
-      | some c =>
-        simp only [ih, restoreList, hc]
-        cases restoreList n tl <;> simp
-
-@[csimp] private theorem restoreList_eq_restoreListTR :
-    @restoreList = @restoreListTR := by
-  funext n snap
-  rw [restoreListTR, restoreListTR.go_eq]
-  cases restoreList n snap <;> simp
-
-/ -- Restore a checker state from a snapshot. Invalid snapshots restore to the
-    empty (satisfiable) formula, which is sound: soundness lemmas only ever
-    *assume* unsatisfiability of a restored state. Readiness holds for both
-    branches via `readyForRupAdd_ofArray`/`readyForRatAdd_ofArray`. - /
-def restoreD (n : Nat) (snap : Snapshot) : DefaultFormula n :=
-  match restoreList n snap with
-  | some cs => Formula.ofArray cs.toArray
-  | none => Formula.ofArray #[]
-
-/ -- A restored state is always ready for further chunks (both `restoreD`
-    branches go through `Formula.ofArray`). - /
-theorem restoreD_ready {n : Nat} (snap : Snapshot) :
-    Formula.ReadyForRupAdd (restoreD n snap) ∧ Formula.ReadyForRatAdd (restoreD n snap) := by
-  unfold restoreD
-  split <;> exact ⟨Formula.readyForRupAdd_ofArray _, Formula.readyForRatAdd_ofArray _⟩
-
-theorem units_empty_of_ready {n : Nat} {f : DefaultFormula n}
-    (h1 : Formula.ReadyForRupAdd f) (h2 : Formula.ReadyForRatAdd f) :
-    f.rupUnits = #[] ∧ f.ratUnits = #[] := by
-  have h1' : DefaultFormula.ReadyForRupAdd f := h1
-  have h2' : DefaultFormula.ReadyForRatAdd f := h2
-  unfold DefaultFormula.ReadyForRupAdd at h1'
-  unfold DefaultFormula.ReadyForRatAdd at h2'
-  exact ⟨h1'.1, h2'.1⟩
-
-/ -! ## Roundtrip: `restoreD` after `serialize` preserves the model set - /
-
-private theorem restoreLits_serialize {n : Nat} (ls : List (Literal (PosFin n))) :
-    restoreLits n (ls.map fun l => (l.1.val, l.2)) = some ls := by
-  induction ls with
-  | nil => rfl
-  | cons l rest ih =>
-    obtain ⟨⟨v, hv⟩, b⟩ := l
-    simp [restoreLits, ih, hv]
-
-private theorem restoreClause_serialize {n : Nat} (c : DefaultClause n) :
-    restoreClause n (c.clause.map fun l => (l.1.val, l.2)) = some c := by
-  obtain ⟨cl, hkey, hnodup⟩ := c
-  simp [restoreClause, restoreLits_serialize, hnodup]
-  grind
-
-private theorem restoreList_serialize {n : Nat} (cs : List (Option (DefaultClause n))) :
-    restoreList n (cs.map (Option.map fun c => c.clause.map fun l => (l.1.val, l.2)))
-      = some cs := by
-  induction cs with
-  | nil => rfl
-  | cons hd tl ih =>
-    cases hd with
-    | none => simp [restoreList, ih]
-    | some c => simp [restoreList, ih, restoreClause_serialize]
-
-private theorem restoreList_serialize_eq {n : Nat} (f : DefaultFormula n) :
-    restoreList n (serialize f) = some f.clauses.toList := by
-  simp only [serialize, Array.toList_map]
-  exact restoreList_serialize f.clauses.toList
-
-theorem restoreD_serialize {n : Nat} (f : DefaultFormula n) :
-    restoreD n (serialize f) = (Formula.ofArray f.clauses : DefaultFormula n) := by
-  simp [restoreD, restoreList_serialize_eq]
-
-private theorem liff_ofArray_units {n : Nat} (f : DefaultFormula n)
-    (hrup : f.rupUnits = #[]) (hrat : f.ratUnits = #[]) :
-    Liff (PosFin n) (Formula.ofArray f.clauses : DefaultFormula n) f := by
-  intro p
-  rw [Formula.sat_iff_forall, Formula.sat_iff_forall]
-  have ht : Formula.toList (Formula.ofArray f.clauses : DefaultFormula n)
-      = Formula.toList f := by
-    show DefaultFormula.toList (DefaultFormula.ofArray f.clauses) = DefaultFormula.toList f
-    simp [DefaultFormula.toList, DefaultFormula.ofArray, hrup, hrat]
-  rw [ht]
-
-/ -! ## Compaction: hole-free snapshots preserve the model set
+/-! ## Compaction: hole-free snapshots preserve the clause list
 
 `serialize` keeps one position per clause id, holes included, so the snapshot
 of a long run carries every id the solver ever allocated even though almost
 all of those clauses are deleted. `compactSnapshot` drops the holes (order
-preserved). The lemmas below show that a compacted snapshot restores to a
-formula with the same clause list as the verbatim one, so unsatisfiability
-transfers across a compacting boundary exactly as across a verbatim boundary.
-Positions shift, so the ids and hints of all subsequent chunks must be
-renumbered to match; that renumbering is data preparation, not trusted code —
-a wrong id or hint makes the per-chunk check fail, never succeed. - /
+preserved). A compacted snapshot restores to a state with the same clause
+list as the state it was taken from, so unsatisfiability transfers across a
+compacting boundary exactly as across a verbatim boundary. Positions shift,
+so the ids and hints of all subsequent chunks must be renumbered to match;
+that renumbering is data preparation, not trusted code — a wrong id or hint
+makes the per-chunk check fail, never succeed. -/
 
-/ -- The hole-dropping core of `compactSnapshot` (order of live clauses
-    preserved). - /
-private def compactCore (snap : Snapshot) : Snapshot :=
-  (snap.filterMap id).map some
-
-private theorem restoreList_compactCore {n : Nat} (snap : Snapshot) :
-    restoreList n (compactCore snap)
-      = (restoreList n snap).map (fun cs => (cs.filterMap id).map some) := by
-  induction snap with
-  | nil => rfl
-  | cons hd tl ih =>
-    cases hd with
-    | none =>
-      have hc : compactCore (none :: tl) = compactCore tl := by
-        simp [compactCore]
-      rw [hc, ih, restoreList]
-      cases restoreList n tl <;> simp
-    | some ls =>
-      have hc : compactCore (some ls :: tl) = some ls :: compactCore tl := by
-        simp [compactCore]
-      rw [hc, restoreList, restoreList, ih]
-      cases restoreClause n ls <;> cases restoreList n tl <;> simp
-
-/ -- Drop the holes of a snapshot, preserving the order of live clauses. The
-    leading `none` keeps the checker's `clauses[0] = none` layout invariant,
-    so every live clause lands at a position ≥ 1 and stays addressable by
-    LRAT hints (`0` terminates a hint list, so position 0 could never be
-    referenced). - /
+/-- Drop the holes of a snapshot, preserving the order of live clauses. The
+    leading `none` stands for id `0`, so the `r`-th live clause lands at
+    position `r` (id `r`) and the next clause the checker adds gets id
+    `live + 1`. -/
 def compactSnapshot (snap : Snapshot) : Snapshot :=
-  none :: compactCore snap
+  none :: (snap.filterMap id).map some
 
-private theorem restoreList_compact {n : Nat} (snap : Snapshot) :
-    restoreList n (compactSnapshot snap)
-      = (restoreList n snap).map (fun cs => none :: (cs.filterMap id).map some) := by
-  show restoreList n (none :: compactCore snap) = _
-  rw [restoreList, restoreList_compactCore]
-  cases restoreList n snap <;> simp
+/-- Restoring a compacted snapshot yields a state with the same CNF as the
+    state the snapshot was taken from: the compacting analogue of
+    `restoreD_serialize`. -/
+theorem toCNF_restoreD_compactSnapshot_serialize (s : State) :
+    (restoreD (compactSnapshot (serialize s))).toCNF = s.toCNF := by
+  obtain ⟨formula⟩ := s
+  simp only [restoreD, compactSnapshot, serialize, State.toCNF, List.tail_cons]
+  congr 1
+  apply Array.toList_inj.mp
+  simp [List.filterMap_map, List.map_filterMap, Function.comp_def, restoreClause_serialize,
+    List.filterMap_filterMap]
+  congr 1
+  funext o
+  cases o <;> rfl
 
-private theorem toList_ofArray {n : Nat} (cs : Array (Option (DefaultClause n))) :
-    DefaultFormula.toList (Formula.ofArray cs : DefaultFormula n)
-      = cs.toList.filterMap id := by
-  show DefaultFormula.toList (DefaultFormula.ofArray cs) = cs.toList.filterMap id
-  simp [DefaultFormula.toList, DefaultFormula.ofArray]
-
-/ -- Restoring a compacted snapshot yields the same model set as the state the
-    snapshot was taken from: the compacting analogue of the verbatim
-    roundtrip. - /
-theorem liff_restoreD_compactSnapshot_serialize {n : Nat} (f : DefaultFormula n)
-    (hrup : f.rupUnits = #[]) (hrat : f.ratUnits = #[]) :
-    Liff (PosFin n) (restoreD n (compactSnapshot (serialize f))) f := by
-  have hres : restoreList n (compactSnapshot (serialize f))
-      = some (none :: (f.clauses.toList.filterMap id).map some) := by
-    rw [restoreList_compact, restoreList_serialize_eq, Option.map_some]
-  intro p
-  rw [Formula.sat_iff_forall, Formula.sat_iff_forall]
-  have ht : Formula.toList (restoreD n (compactSnapshot (serialize f)))
-      = Formula.toList f := by
-    show DefaultFormula.toList (restoreD n (compactSnapshot (serialize f)))
-      = DefaultFormula.toList f
-    rw [restoreD, hres, toList_ofArray]
-    simp [DefaultFormula.toList, hrup, hrat, List.filterMap_map]
-  rw [ht]
-
+/- PORT (v4.36.0): A4 in progress
 / -! ## Per-module step checks - /
 
 / -- First chunk: start from `cnf` (as the core checker does) and check that
