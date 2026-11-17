@@ -100,9 +100,10 @@ Further commands, with worked examples under `LRATCatcher/Tests/`:
   per-cube refutations in parallel with `lratcatch-cover-parallel` (see
   [Parallel cube-and-conquer](#parallel-cube-and-conquer)).
 
-Every command has a `+kernel` variant, for example
-`lrat_decide +kernel name "f.cnf"` (see Trust base). Certificate paths are
-relative to the directory where `lake` runs, which is the package root.
+`lrat_reflect`, `lrat_reflect_cnf` and `lrat_decide` have a `+kernel`
+variant, for example `lrat_decide +kernel name "f.cnf"` (see Trust base).
+Certificate paths are relative to the directory where `lake` runs, which is
+the package root.
 
 ## Parallel cube-and-conquer
 
@@ -224,8 +225,10 @@ complete worked example.
   theorem carries one `native_decide` axiom, visible under `#print axioms`.
 - **Kernel mode** (`+kernel`): the Lean kernel alone, with the standard axioms
   and no `native_decide` axiom. It is slower and embeds the CNF as a literal
-  term. Use it as a trust dial, and for the RAT cases that the configured native
-  path does not cover.
+  term (clauses as `CNF.Clause.ofLiterals [...]`). Its checker
+  (`LRATCatcher.checkKernel`, full RAT) has its own soundness proof against
+  the CNF lemmas of Lean core and follows the acceptance rules of the native
+  checker. Use it as a trust dial.
 
 In both modes the trusted statement contains the DIMACS parser, the CNF, or
 both, so the theorem says exactly what the input files say.

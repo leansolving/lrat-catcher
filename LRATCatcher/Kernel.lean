@@ -162,7 +162,7 @@ def initK (cnf : CNF Nat) : State := ⟨⟨cnf.clauses.toList.map some⟩⟩
 
 /-- Kernel-mode LRAT check: every reduction step is kernel-friendly, so
     `checkKernel cnf proof = true` can be discharged with `decide +kernel`.
-    Accepts the certificates that `Std.Tactic.BVDecide.LRAT.check` accepts. -/
+    Follows the acceptance rules of `Std.Tactic.BVDecide.LRAT.check`. -/
 def checkKernel (cnf : CNF Nat) (proof : List IntAction) : Bool :=
   runK (initK cnf) proof
 
