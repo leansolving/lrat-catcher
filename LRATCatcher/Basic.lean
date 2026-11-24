@@ -28,6 +28,8 @@ open Std.Sat
 
 namespace LRATCatcher
 
+universe u
+
 /-- DIMACS literal → Std literal: variable `|l| - 1` (0-indexed), polarity `l > 0`.
     Precondition `l ≠ 0` (callers treat `0` as a clause terminator first;
     on `0` this would return `(0, false)` by `Nat` truncating subtraction). -/
@@ -37,7 +39,7 @@ def dimacsLit (l : Int) : Nat × Bool := (l.natAbs - 1, decide (0 < l))
     library (DIMACS parsing, cubes, encodings); `eval_ofLiterals` evaluates such a clause. -/
 
 /-- Evaluating a clause built from a literal list: some literal agrees with `a`. -/
-@[simp] theorem eval_ofLiterals {α : Type} (a : α → Bool) (l : List (Literal α)) :
+@[simp] theorem eval_ofLiterals {α : Type u} (a : α → Bool) (l : List (Literal α)) :
     CNF.Clause.eval a (CNF.Clause.ofLiterals l) = l.any fun (i, b) => a i == b := by
   simp [CNF.Clause.eval]
 
