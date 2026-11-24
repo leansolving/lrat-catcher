@@ -237,8 +237,10 @@ complete worked example.
   and no `native_decide` axiom. It is slower and embeds the CNF as a literal
   term (clauses as `CNF.Clause.ofLiterals [...]`). Its checker
   (`LRATCatcher.checkKernel`, full RAT) has its own soundness proof against
-  the CNF lemmas of Lean core and follows the acceptance rules of the native
-  checker. Use it as a trust dial.
+  the CNF lemmas of Lean core. It is designed after the native checker;
+  agreement is tested, not proved, and it accepts some certificates the
+  native checker rejects (a hint clause containing an atom in both
+  polarities; see `LRATCatcher/Kernel.lean`). Use it as a trust dial.
 
 In both modes the trusted statement contains the DIMACS parser, the CNF, or
 both, so the theorem says exactly what the input files say.

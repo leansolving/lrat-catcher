@@ -21,10 +21,17 @@ import Std.Tactic.BVDecide.LRAT
   entailment glue). Everything that runs in the kernel recurses structurally
   on lists; well-founded recursion (`Array.map`, index loops) is avoided.
 
-  Acceptance follows `Std.Tactic.BVDecide.LRAT.check`: a clause id is its
-  position (id `i` is slot `i - 1`), unknown or deleted hint ids fail, a RAT
-  action whose pivot is not in its clause fails, and RAT hint groups must cover
-  every live clause containing the negated pivot.
+  The checker is designed after `Std.Tactic.BVDecide.LRAT.check`: a clause id
+  is its position (id `i` is slot `i - 1`), unknown or deleted hint ids fail,
+  a RAT action whose pivot is not in its clause fails, and RAT hint groups must
+  cover every live clause containing the negated pivot. Its soundness
+  (`checkKernel_sound`) is proved on its own. Agreement with the core checker
+  is tested, not proved, and it does not hold in general: the kernel checker
+  accepts some certificates the core checker rejects. Example
+  (`Tests/KernelTest.lean`): clauses `x`, `x ∨ ¬x`, `¬x` and one empty-clause
+  step with hints 1, 2, 3. Here hint 2 propagates `x` (its literal `¬x` is
+  false after hint 1), while core propagation returns an error on a hint
+  clause that contains an atom in both polarities.
 
   Statements are about a Lean-defined `CNF Nat` term (the `lrat_reflect_cnf`
   form); `parseDimacs` itself does not kernel-reduce (byte-string slice
@@ -162,7 +169,9 @@ def initK (cnf : CNF Nat) : State := ⟨⟨cnf.clauses.toList.map some⟩⟩
 
 /-- Kernel-mode LRAT check: every reduction step is kernel-friendly, so
     `checkKernel cnf proof = true` can be discharged with `decide +kernel`.
-    Follows the acceptance rules of `Std.Tactic.BVDecide.LRAT.check`. -/
+    Designed after `Std.Tactic.BVDecide.LRAT.check` and sound on its own
+    (`checkKernel_sound`); it accepts some certificates the core checker
+    rejects (see the module docstring). -/
 def checkKernel (cnf : CNF Nat) (proof : List IntAction) : Bool :=
   runK (initK cnf) proof
 
