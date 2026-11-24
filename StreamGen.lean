@@ -141,6 +141,11 @@ def main (args : List String) : IO UInt32 := do
     die s!"Name '{name}' must be a Lean identifier component (letters, digits, '_'; not digit-initial)"
 
   let baseStr ← readInput baseFile
+  -- the DIMACS text is embedded in Base.lean: refuse input where the parser's
+  -- leniency could matter, as the elaboration commands do
+  match checkDimacsText baseFile baseStr with
+  | .error msg => die msg
+  | .ok warnings => for w in warnings do IO.eprintln s!"lratcatch-stream-gen: warning: {w}"
   -- The formula the certificate is checked against.
   let cnf := parseDimacs baseStr
   let modPrefix := s!"LRATCatcher.Generated.{name}"

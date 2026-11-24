@@ -180,6 +180,9 @@ def parseRecubed (s : String) : IO (List Nat) := do
 def readSubCubes (subicnfDir : String) (i : Nat) : IO (Array Cube) := do
   let p := s!"{subicnfDir}/leaf{i}_d8.icnf"
   let s ← readInput p
+  match checkICnfText p s with
+  | .error msg => die msg
+  | .ok warnings => for w in warnings do IO.eprintln s!"lratcatch-cover-stream: warning: {w}"
   let cs := (parseICnf s).toArray
   if cs.size == 0 then die s!"no subcubes found in '{p}'"
   return cs
@@ -256,6 +259,14 @@ def main (args : List String) : IO UInt32 := do
 
   let baseStr ← readInput baseFile
   let icnfStr ← readInput icnfFile
+  -- both texts are embedded in Base.lean: refuse input where the parsers'
+  -- leniency could matter, as the elaboration commands do
+  match checkDimacsText baseFile baseStr with
+  | .error msg => die msg
+  | .ok warnings => for w in warnings do IO.eprintln s!"lratcatch-cover-stream: warning: {w}"
+  match checkICnfText icnfFile icnfStr with
+  | .error msg => die msg
+  | .ok warnings => for w in warnings do IO.eprintln s!"lratcatch-cover-stream: warning: {w}"
   let cubes := (parseICnf icnfStr).toArray
   let n := cubes.size
   if n == 0 then die "no cubes found in iCNF file"

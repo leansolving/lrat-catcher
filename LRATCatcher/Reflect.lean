@@ -75,32 +75,13 @@ def readFile' (path : String) : CommandElabM String := do
   catch e =>
     throwError "cannot read '{path}': {e.toMessageData}"
 
-/-- Elaboration-time validation of DIMACS text: every nonempty line must be a
-    comment (`c…`), the header (`p…`), or a clause line of integer tokens, and
-    the final integer token of the file, if there is one, must be `0` (a file
-    without clauses is the empty CNF). Warns about empty clauses.
-    Rejects exactly the input where `parseDimacs`' leniency could matter. -/
+/-- Elaboration-time validation of DIMACS text (`checkDimacsText`): an
+    error for input where `parseDimacs`' leniency could matter, warnings for an
+    empty clause and for counts that disagree with the header. -/
 def validateDimacs (path : String) (s : String) : CommandElabM Unit := do
-  let mut lineNo : Nat := 0
-  let mut lastTok : Option Int := none
-  for line in s.splitOn "\n" do
-    lineNo := lineNo + 1
-    let t := line.trimAscii.toString
-    if t.isEmpty || t.startsWith "c" || t.startsWith "p" then
-      continue
-    unless t.front.isDigit || t.front == '-' do
-      throwError "{path}:{lineNo}: unrecognized line (not a comment, header, or clause): '{t}'"
-    for tok in t.split (fun ch => ch == ' ' || ch == '\t') do
-      if tok.isEmpty then
-        continue
-      match tok.toInt? with
-      | some l => lastTok := some l
-      | none =>
-        throwError "{path}:{lineNo}: non-integer token '{tok.toString}' in clause line"
-  unless lastTok.isNone || lastTok == some 0 do
-    throwError "{path}: final clause is not terminated by 0"
-  if (parseDimacs s).clauses.any (·.size == 0) then
-    logWarning m!"{path}: contains an empty clause — the CNF is trivially unsatisfiable"
+  match checkDimacsText path s with
+  | .error msg => throwError msg
+  | .ok warnings => for w in warnings do logWarning m!"{w}"
 
 /-! ## Quoting pre-parsed LRAT actions (kernel mode)
 

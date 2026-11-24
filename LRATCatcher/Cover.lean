@@ -258,34 +258,47 @@ def parseICnf (s : String) : List Cube := Id.run do
 
 /-! ## Validation and command -/
 
-/-- Elaboration-time validation of an iCNF cube file: every nonempty line must
-    be a comment (`c…`), a header (`p…`), or a cube line `a l1 … lk 0` of
-    integer tokens with exactly one `0`, at the end. Warns about empty cubes.
-    Rejects exactly the input where `parseICnf`'s leniency could matter. -/
-def validateICnf (path : String) (s : String) : CommandElabM Unit := do
+/-- Validation of an iCNF cube file, shared by `validateICnf` and the module
+    generators: every nonempty line must be a comment (`c…`), the header
+    `p inccnf`, or a cube line `a l1 … lk 0` of integer tokens (no `_` digit
+    separators) with exactly one `0`, at the end. `.error msg` rejects exactly
+    the input where `parseICnf`'s leniency could matter; `.ok ws` lists
+    warnings about empty cubes. -/
+def checkICnfText (path s : String) : Except String (List String) := Id.run do
   let mut lineNo : Nat := 0
+  let mut warnings : List String := []
   for line in s.splitOn "\n" do
     lineNo := lineNo + 1
     let t := line.trimAscii.toString
-    if t.isEmpty || t.startsWith "c" || t.startsWith "p" then
+    if t.isEmpty || t.startsWith "c" then
+      continue
+    if t.startsWith "p" then
+      unless (lineTokens t).toList == ["p", "inccnf"] do
+        return .error s!"{path}:{lineNo}: malformed header (expected 'p inccnf'): '{t}'"
       continue
     unless t == "a" || t.startsWith "a " || t.startsWith "a\t" do
-      throwError "{path}:{lineNo}: unrecognized line (not a comment, header, or cube): '{t}'"
+      return .error s!"{path}:{lineNo}: unrecognized line (not a comment, header, or cube): '{t}'"
     let mut vals : List Int := []
-    for tok in (t.drop 1).split (fun ch => ch == ' ' || ch == '\t') do
-      if tok.isEmpty then
-        continue
-      match tok.toInt? with
+    for tok in lineTokens (t.drop 1).toString do
+      match dimacsInt? tok with
       | some l => vals := l :: vals
-      | none => throwError "{path}:{lineNo}: non-integer token '{tok.toString}' in cube line"
+      | none => return .error s!"{path}:{lineNo}: non-integer token '{tok}' in cube line"
     match vals with -- `vals` is reversed: head is the last token of the line
-    | [] => throwError "{path}:{lineNo}: bare 'a' line without terminating 0"
+    | [] => return .error s!"{path}:{lineNo}: bare 'a' line without terminating 0"
     | 0 :: rest =>
       if rest.contains 0 then
-        throwError "{path}:{lineNo}: more than one 0 in cube line"
+        return .error s!"{path}:{lineNo}: more than one 0 in cube line"
       if rest.isEmpty then
-        logWarning m!"{path}:{lineNo}: empty cube 'a 0' — this leaf equals the base formula"
-    | _ => throwError "{path}:{lineNo}: cube line does not end with 0"
+        warnings := warnings ++
+          [s!"{path}:{lineNo}: empty cube 'a 0' — this leaf equals the base formula"]
+    | _ => return .error s!"{path}:{lineNo}: cube line does not end with 0"
+  return .ok warnings
+
+/-- Elaboration-time validation of an iCNF cube file (`checkICnfText`). -/
+def validateICnf (path : String) (s : String) : CommandElabM Unit := do
+  match checkICnfText path s with
+  | .error msg => throwError msg
+  | .ok warnings => for w in warnings do logWarning m!"{w}"
 
 /-- `lrat_cover_reflect name "base.cnf" "cubes.icnf" "leafs/prefix" "cover.lrat"`:
     certify a cube-and-conquer run. Leaf certificates are read from
