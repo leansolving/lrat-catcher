@@ -147,7 +147,7 @@ theorem runChunk_more_sound {s s' : State} {chunk : Array IntAction} {idx : Nat}
   | case1 => simp
   | case2 s idx hidx s'' hstep ih => intro h hu; exact step_more_sound hstep (ih h hu)
   | case3 => simp
-  | case4 s idx hidx =>
+  | case4 s _ _ =>
     intro h hu
     simp only [Option.some.injEq, ChunkOut.more.injEq] at h
     subst h
