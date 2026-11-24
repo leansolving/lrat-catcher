@@ -293,6 +293,22 @@ theorem toCNF_restoreD_compactSnapshot_serialize (s : State) :
   funext o
   cases o <;> rfl
 
+/-- Serializing, compacting and restoring a state gives the state with the
+    holes of its clause array dropped: the same clauses at the same positions,
+    computed without the literal lists (used by `compactEvery`). -/
+theorem restoreD_compactSnapshot_serialize (s : State) :
+    restoreD (compactSnapshot (serialize s)) = ⟨s.formula.filter Option.isSome⟩ := by
+  obtain ⟨formula⟩ := s
+  simp only [restoreD, compactSnapshot, serialize, List.tail_cons, State.mk.injEq]
+  apply Array.toList_inj.mp
+  simp only [Array.toList_map, id_eq, List.filterMap_cons_none, List.filterMap_map,
+    Function.comp_def, List.map_filterMap, Option.map_map, List.map_toArray, Option.map_some,
+    restoreClause_serialize, Array.toList_filter']
+  generalize formula.toList = l
+  induction l with
+  | nil => rfl
+  | cons o l ih => cases o <;> simp [ih]
+
 /-! ## Per-module step checks -/
 
 /-- First chunk: start from `cnf` (as the core checker does) and check that

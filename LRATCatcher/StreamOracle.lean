@@ -94,9 +94,12 @@ theorem checkStreamCnf_sound (cnf : CNF Nat) (feed : Nat → Option (Array IntAc
 The clause array of a long run keeps one slot per clause id ever allocated
 (deletion only sets slots to `none`), so monolithic RSS grows with the id
 space even though almost every clause is deleted. `checkStreamC` compacts the
-state every `k` feed blocks: serialize, drop the holes (`compactSnapshot`),
-restore. The clause list is preserved exactly
-(`toCNF_restoreD_compactSnapshot_serialize`), so soundness composes as before.
+state every `k` feed blocks: it drops the holes of the clause array, which
+gives the same state as serialize, drop the holes (`compactSnapshot`), restore
+(`restoreD_compactSnapshot_serialize`), so the positions agree with the step
+checks `stepStartC`/`stepMidC` and with `lratcatch-compact-renumber`. The
+clause list is preserved exactly (`toCNF_restoreD_compactSnapshot_serialize`),
+so soundness composes as before.
 The feed must supply ids and hints renumbered to the compacted positions —
 untrusted data preparation (`lratcatch-compact-renumber` for files/archives):
 a wrong renumbering cannot establish a false refutation; it may make the check
@@ -107,13 +110,14 @@ accepts. -/
     1-based count of blocks processed so far), unchanged otherwise. `k = 0`
     never compacts. -/
 def compactEvery (k i : Nat) (s : State) : State :=
-  if k != 0 && i % k == 0 then restoreD (compactSnapshot (serialize s)) else s
+  if k != 0 && i % k == 0 then ⟨s.formula.filter Option.isSome⟩ else s
 
 theorem toCNF_compactEvery (k i : Nat) (s : State) :
     (compactEvery k i s).toCNF = s.toCNF := by
   unfold compactEvery
   split
-  · exact toCNF_restoreD_compactSnapshot_serialize s
+  · rw [← restoreD_compactSnapshot_serialize]
+    exact toCNF_restoreD_compactSnapshot_serialize s
   · rfl
 
 /-- Like `checkStream`, but every `k` blocks the clause database is compacted
