@@ -29,14 +29,12 @@ The tool mirrors the checker's state exactly:
   exactly the `compactSnapshot` the checker performs at that boundary.
 
 Every input line yields exactly one output line (blocking is line-based, so
-line counts must be preserved); unknown ids pass through unchanged (the checker
-rejects such a hint unless the number happens to be the position of a live
-clause, in which case it checks the step against that clause).
-
-The base must contain no tautological (complementary-literal) and no
-duplicate-literal clauses: the core converter silently drops clauses it cannot
-represent, which would shift every base position (solver-facing CNFs are
-normally clean). The tool refuses such bases.
+line counts must be preserved). An unknown hint id (never added, or already
+deleted) passes through unchanged: the checker rejects such a hint unless the
+number happens to be the position of a live clause, in which case it checks the
+step against that clause. An unknown deletion id is dropped from its deletion
+line (the line and its terminating `0` stay): passed through, it could name the
+compacted position of another live clause and delete that clause.
 
 Usage: `lratcatch-compact-renumber base.cnf in.lrat out.lrat K [--block B]`
 (`in.lrat`/`out.lrat` may be `-` for stdin/stdout).
@@ -97,7 +95,7 @@ def rewriteLine (st : St) (line : String) : String × St := Id.run do
           | some p =>
             st := { st with posOf := st.posOf.erase i, idAt := st.idAt.erase p }
             out := toString p :: out
-          | none => out := tok :: out   -- unknown id: passed through unchanged
+          | none => pure ()   -- unknown id: dropped (it could name another live clause)
         | none => out := tok :: out
       return (String.intercalate " " out.reverse, st)
     | _ =>
@@ -141,21 +139,12 @@ def main (args : List String) : IO UInt32 := do
   let some kBlocks := kArg.toNat? | die s!"K must be a number, got '{kArg}'"
   if kBlocks == 0 then die "K must be ≥ 1 (no compaction wanted? use plain lrat_stream_cnf)"
 
-  -- base layout: positions 1..nBase; refuse bases the converter would thin out
+  -- base layout: positions 1..nBase (`State.ofCNF` keeps every clause in its slot)
   let baseStr ← try IO.FS.readFile baseFile
     catch e => die s!"cannot read '{baseFile}': {e}"
   let base := parseDimacs baseStr
   let nBase := base.clauses.size
   if nBase == 0 then die s!"no clauses parsed from '{baseFile}'"
-  for i in [0:nBase] do
-    let c := base.clauses[i]!
-    let mut seen : Std.HashMap (Nat × Bool) Unit := {}
-    for l in c do
-      if seen.contains l then
-        die s!"base clause {i+1} has a duplicate literal — base positions would shift (clean the CNF first)"
-      if seen.contains (l.1, !l.2) then
-        die s!"base clause {i+1} is a tautology — the checker drops it, shifting base positions (clean the CNF first)"
-      seen := seen.insert l ()
 
   let inStream : IO.FS.Stream ←
     if inFile == "-" then IO.getStdin
