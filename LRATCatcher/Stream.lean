@@ -164,7 +164,9 @@ theorem runChunk_more_sound {s s' : State} {chunk : Array IntAction} {idx : Nat}
     `State.checkRat` with zero RAT groups still validates the addition (it
     checks there is no live clause containing the negated pivot), so this stays
     checker-validated — a bogus empty-hint addition still fails. Identity
-    on every other action. -/
+    on every other action. The core parser of Lean v4.36.0 already emits
+    `addRat` for additions without hints, so on parser output this is the
+    identity; it is kept as a safeguard for hand-built action arrays. -/
 def normalizeAction (a : IntAction) : IntAction :=
   match a with
   | .addRup id c hints =>
@@ -175,8 +177,10 @@ def normalizeAction (a : IntAction) : IntAction :=
       .addRup id c hints
   | a => a
 
-/-- Parse LRAT text into actions; `#[]` on failure. A failed parse can only
-    make the Boolean step checks fail, so this is sound. Empty-hint
+/-- Parse LRAT text into actions; `#[]` on failure. A failed parse yields an
+    empty chunk, a no-op step (the state is unchanged, so a start or middle
+    step check accepts it when the next snapshot images the same state); it
+    cannot establish a false refutation. Empty-hint
     additions are normalized to pivot-RAT steps (see `normalizeAction`). -/
 def parseActions (s : String) : Array IntAction :=
   match parseLRATProof s.toUTF8 with
@@ -236,9 +240,12 @@ def restoreClause (ls : List (Nat × Bool)) : CNF.Clause Nat :=
   .ofLiterals (ls.map fun l => (l.1 - 1, l.2))
 
 /-- Restore a checker state from a snapshot: drop position `0`, rebuild each
-    clause. Total: every snapshot restores to some state, which is sound
-    because the soundness lemmas only ever *assume* unsatisfiability of a
-    restored state. -/
+    clause. Total: every snapshot restores to some state. No side condition
+    is needed because every soundness conclusion is about the state the
+    checker itself ran on: a restored state appears only as
+    `(restoreD prev).toCNF.Unsat` in a conclusion (the state the chunk ran
+    on), or as a hypothesis `(restoreD next).toCNF.Unsat` that the next step
+    discharges. -/
 def restoreD (snap : Snapshot) : State :=
   ⟨snap.tail.toArray.map (Option.map restoreClause)⟩
 
@@ -380,7 +387,9 @@ theorem stepMidC_sound {prev : Snapshot} {chunk : Array IntAction} {next : Snaps
 /-! ## Externalization (presolve/derivation handoff)
 
 A chunk chain that ends in `more` (no empty clause) is a checked *derivation*
-`F ⊢ F′` — the certified-presolve primitive. `externSnap` turns the final
+`F ⊢ F′` — the certified-presolve primitive. Here `F ⊢ F′` means refutation
+transfer: a refutation of `F′` gives one of `F`. With RAT steps, `F` need not
+entail `F′`. `externSnap` turns the final
 snapshot into a `CNF Nat`, so the derived formula can be cubed and refuted
 with the existing cube-and-conquer machinery (`checkCover`); the bridge
 `extern_unsat_restoreD` transfers that refutation back to the snapshot state,

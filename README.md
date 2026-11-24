@@ -214,8 +214,10 @@ dense numbering the core checker expects.
 
 **Certified presolve.** A simplification run of the solver
 (`cadical -P4 -c 0 -d 0 --lrat --no-binary --no-factor F.cnf deriv.lrat`)
-yields an LRAT *derivation* F ⊢ F′ without the empty clause. `derive` mode
-checks it once and externalizes the derived formula:
+yields an LRAT *derivation* F ⊢ F′ without the empty clause. Here F ⊢ F′
+means refutation transfer: a refutation of F′ gives one of F (with RAT steps,
+F need not entail F′). `derive` mode checks it once and externalizes the
+derived formula:
 
 ```sh
 lake exe lratcatch-stream-gen derive base.cnf deriv.lrat Name chunkLines

@@ -19,7 +19,8 @@ Two modes:
   `Main.lean` composes the steps to `base_unsat : base.Unsat` with one
   `native_decide` axiom per chunk and nothing else.
 * `derive` — the certificate is a *derivation* `F ⊢ F′` (no empty clause;
-  e.g. a presolve trace). Emits `fprime.cnf` (the derived formula, original
+  e.g. a presolve trace). `F ⊢ F′` means refutation transfer: a refutation of
+  `F′` gives one of `F`; with RAT steps, `F` need not entail `F′`. Emits `fprime.cnf` (the derived formula, original
   variable names) for cubing/solving, and `Main.lean` provides
   `deriv_transfer : (externSnap snapM).Unsat → base.Unsat`; refute
   `externSnap snapM` with the cube-and-conquer machinery (`checkCover` /
@@ -40,7 +41,8 @@ padding clause without an id) is imported without `--pad`.
 (a Lean *term*, no file string; `Mod` imported). The tool still reads
 `base.cnf` for its streaming pre-check, so the caller must pass the previous
 batch's emitted `fprime.cnf`; the generated `native_decide` re-check is the
-authority, so a term/file mismatch fails at build time, not soundness.
+authority, so a term/file mismatch cannot establish a false refutation: it may
+fail the check at build time, or it may describe another valid deduction.
 
 Emits under `LRATCatcher/Generated/<Name>/`:
   Base.lean     — `base : CNF Nat` (the DIMACS string + parser)
@@ -162,12 +164,14 @@ def main (args : List String) : IO UInt32 := do
   -- `fprime.cnf` (which equals `externSnap` of that snapshot) as `base.cnf`.
   -- The tool cannot verify the term↔file correspondence across processes; the
   -- authority is the generated modules' `native_decide` re-check, so a mismatch
-  -- fails at build time, never soundness.
+  -- cannot establish a false refutation: it may fail the check at build time,
+  -- or it may describe another valid deduction.
   let chainNote := match chainPrev with
     | some _ =>
       s!"-- base term = previous batch's derived formula (externSnap of its snapshot);\n" ++
       s!"-- re-checked by native_decide in the Chunk modules, so a term/file mismatch\n" ++
-      s!"-- fails at build time, not soundness.\n"
+      s!"-- cannot establish a false refutation: it may fail the check at build time,\n" ++
+      s!"-- or it may describe another valid deduction.\n"
     | none => ""
 
   -- ---- Base.lean ----

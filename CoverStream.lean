@@ -8,7 +8,8 @@ certificates. The top level splits `base` into top cubes; some of those cubes we
 too hard and got *re-cubed* into subcubes (a second level). Each leaf certificate
 is checked while it streams from a FIFO (never stored uncompressed), via the
 `lrat_stream_cnf` command from `LRATCatcher.StreamOracle`; the final module composes
-everything with the proved `cover_unsat` (no `native_decide` — pure proof term).
+everything with the proved `cover_unsat`; its only native evaluation is the cube-list
+identity `cubes_eq`.
 
 Compared to `lratcatch-cover-parallel`:
 
@@ -69,14 +70,18 @@ the concatenated DIMACS with the base clauses FIRST, so LRAT clause ids line up.
 `K` (default 16): direct leaves per chunk module.
 `--base-term T [--import M …]`: state `base` as the Lean term `T` (an encoder applied
 to its parameters, imported from the modules `M`) instead of the parsed DIMACS text;
-`base.cnf` must then be the printout of `T` (`lratcatch-gen`), which the leaf checks
-enforce (a mismatch fails, never proves).
+`base.cnf` must then be the printout of `T` (`lratcatch-gen`). The leaf checks run
+against `T`, so a mismatch cannot establish a false refutation: it may fail the check,
+or it may describe another valid deduction.
 `--root R`: module-name root of the emitted set (default `LRATCatcher.Generated`).
 
 The final statement is `base.Unsat`, with `base` either
 `LRATCatcher.parseDimacs «base contents»` or the `--base-term`; the trust base is
-kernel + compiler with one `native_decide` axiom per streaming/native module (visible
-in `#print axioms base_unsat`).
+kernel + compiler with one `native_decide` axiom per native evaluation, all visible in
+`#print axioms base_unsat`: a chunk module has one per streamed leaf (up to K), a
+parent module with m subcubes has m + 1 (its streamed subleaves and its embedded
+sub-cover check), `Cover.lean` has one (the cover certificate), `Main.lean` has one
+(`cubes_eq`), and `Base.lean` has none.
 -/
 
 open Std.Sat LRATCatcher
@@ -205,10 +210,10 @@ def main (args : List String) : IO UInt32 := do
   -- `--base-term T`: state `base` as the Lean term `T` (e.g. an encoder
   -- applied to its parameters) instead of `parseDimacs «base.cnf»`. The DIMACS
   -- file must then be the printout of that term (`lratcatch-gen` prints
-  -- `CNF.dimacs`, the inverse of `parseDimacs`); a mismatch cannot yield a
-  -- false theorem — every leaf certificate is checked against the stated term —
-  -- it makes the leaf checks fail. `--import M` (repeatable) adds the imports
-  -- Base.lean needs for `T`.
+  -- `CNF.dimacs`, the inverse of `parseDimacs`); every leaf certificate is
+  -- checked against the stated term, so a mismatch cannot establish a false
+  -- refutation: it may fail the check, or it may describe another valid
+  -- deduction. `--import M` (repeatable) adds the imports Base.lean needs for `T`.
   let (args, baseTerm) ←
     match args.span (· != "--base-term") with
     | (pre, "--base-term" :: t :: post) =>

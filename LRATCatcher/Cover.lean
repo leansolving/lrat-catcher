@@ -71,9 +71,10 @@ theorem sat_of_negClause_false {a : Nat → Bool} {c : Cube}
     WARNING for hand-written pipelines: the leaf DIMACS file handed to the
     solver must list the cube units BEFORE the base clauses, matching
     `c.toCNF ++ base`. With the units appended last, every LRAT clause id is
-    off by `|c|` and the import simply returns `false` — not an error, and not
-    caught by a script that only re-checks its own file with an external
-    checker. -/
+    off by `|c|`. The import cannot establish a false refutation, but it may
+    fail the check (a `false` verdict, not a descriptive error) or describe
+    another valid deduction, and a script that only re-checks its own file
+    with an external checker does not notice the mismatch. -/
 def leafCNF (c : Cube) (base : CNF Nat) : CNF Nat := c.toCNF ++ base
 
 end Cube
@@ -94,8 +95,7 @@ theorem unsat_append_comm {F G : CNF Nat} (h : (F ++ G).Unsat) :
 /-- Removing clauses (e.g. tautologies, or a padding tautology) can only
 make a CNF easier to satisfy, so unsatisfiability of the filtered formula
 gives unsatisfiability of the original. Useful for stripping tautological
-clauses, or padding a base formula with a tautology `v ∨ ¬v` for an
-extension variable. -/
+clauses. -/
 theorem unsat_of_filter_unsat (F : CNF Nat) (p : CNF.Clause Nat → Bool)
     (h : CNF.Unsat (⟨F.clauses.filter p⟩ : CNF Nat)) : F.Unsat := by
   intro a
@@ -161,8 +161,10 @@ theorem cover_complete_rel {base : CNF Nat} {cubes : List Cube}
 /-- **Cube-and-conquer composition, relative cover**: like `cover_unsat`, but
     the cover certificate refutes `base ++ negCubesCNF cubes` (cubes exhaustive
     relative to the base) instead of the unconditional tautology. Strictly more
-    general: a certificate for `negCubesCNF cubes` alone also refutes the
-    concatenation. -/
+    general: a refutation of `negCubesCNF cubes` alone gives one of the
+    concatenation. An LRAT certificate for `negCubesCNF cubes` does not carry
+    over verbatim, since its clause ids shift by the number of base
+    clauses. -/
 theorem cover_unsat_rel {base : CNF Nat} {cubes : List Cube}
     (hleaf : ∀ c ∈ cubes, (Cube.leafCNF c base).Unsat)
     (hcover : (base ++ negCubesCNF cubes).Unsat) :
@@ -323,8 +325,8 @@ elab "lrat_cover_reflect " n:ident ppSpace baseFile:str ppSpace icnfFile:str
     "cover.lrat"`: as `lrat_cover_reflect`, but for a Lean-defined `CNF Nat`:
     registers `name : cnfTerm.Unsat`. The solver-side leaf files must come
     from the DIMACS rendering of the same term (`lratcatch-gen` +
-    `lratcatch-export`); a mismatch makes the leaf certificates fail the
-    check, so soundness never depends on the files. -/
+    `lratcatch-export`); a mismatch cannot establish a false refutation: it
+    may fail the check, or it may describe another valid deduction. -/
 elab "lrat_cover_reflect_cnf " n:ident ppSpace "(" cnfTerm:term ")"
     ppSpace icnfFile:str ppSpace leafPrefix:str ppSpace coverFile:str : command => do
   let icnfStr ← readFile' icnfFile.getString
