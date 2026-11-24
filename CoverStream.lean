@@ -128,12 +128,11 @@ def forallMemProof (elems : List String) : String :=
     `segGroup²` = 65,536 segments). -/
 def segGroupDefault : Nat := 256
 
-/-- Split a list into consecutive blocks of `g`. -/
+/-- Split a list into consecutive blocks of `g` (one block, possibly empty,
+    when the list has at most `g` elements). -/
 partial def blocksOf {α} (g : Nat) (l : List α) : List (List α) :=
-  if l.length ≤ g then [l]
-  else
-    let (h, t) := l.splitAt g
-    h :: blocksOf g t
+  let (h, t) := l.splitAt g
+  if t.isEmpty then [h] else h :: blocksOf g t
 
 /-- Left-nested `List.forall_mem_append.mpr ⟨⟨…⟩, pₙ⟩` chain matching the
     LEFT-associated `s₁ ++ s₂ ++ …` segment expression (`++` is `infixl`, so
