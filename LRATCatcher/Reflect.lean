@@ -76,8 +76,9 @@ def readFile' (path : String) : CommandElabM String := do
     throwError "cannot read '{path}': {e.toMessageData}"
 
 /-- Elaboration-time validation of DIMACS text (`checkDimacsText`): an
-    error for input where `parseDimacs`' leniency could matter, warnings for an
-    empty clause and for counts that disagree with the header. -/
+    error for an unrecognized line, a malformed header, a non-integer token in
+    a clause line, or an unterminated last clause; warnings for an empty
+    clause and for counts that disagree with the header. -/
 def validateDimacs (path : String) (s : String) : CommandElabM Unit := do
   match checkDimacsText path s with
   | .error msg => throwError msg

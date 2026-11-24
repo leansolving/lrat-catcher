@@ -107,6 +107,12 @@ eight streams 25 s, the rest generation and elaboration.
 - Certificates are not Lake dependencies, so a cached `.olean` would be
   replayed without re-reading them; the script therefore removes the
   example's build products before step 8, and every run re-checks the
-  streams. After re-solving a single leaf by hand, rebuild with
-  `lake lean LRATCatcher/Examples/Schur4CC/Chunk1.lean` (`touch` does not
-  trigger a rebuild).
+  streams. After re-solving a single leaf by hand,
+  `lake lean LRATCatcher/Examples/Schur4CC/Chunk1.lean` re-checks the
+  chunk's certificates but writes no `.olean`, so a later `lake build` still
+  replays the old result. To re-check and update the build, make a content
+  change to `Chunk1.lean` (a comment will do; `touch` is not enough) and run
+  `lake build LRATCatcher.Examples.Schur4CC.Final`: Lake re-checks `Chunk1`
+  and rebuilds `Main` and `Final` only if the new `Chunk1.olean` differs from
+  the old one, which a successful re-check of the same statements does not
+  cause.

@@ -83,10 +83,14 @@ def dimacsInt? (tok : String) : Option Int :=
     (`validateDimacs`) and the module generators: every nonempty line must be
     a comment (`c…`), a header `p cnf <n> <m>`, or a clause line of integer
     tokens, and the final integer token of the file, if there is one, must be
-    `0` (a file without clauses is the empty CNF). `.error msg` rejects exactly
-    the input where `parseDimacs`' leniency could matter; `.ok ws` lists
-    warnings: an empty clause, and, when a header is present, a variable above
-    `n` or a clause count other than `m` (the first header counts). -/
+    `0` (a file without clauses is the empty CNF). `.error msg` rejects a line
+    that is none of these (e.g. a SATLIB `%` line), a line starting with `p`
+    that is not `p cnf` with two natural numbers, a token in a clause line
+    that is not an integer (`_` digit separators included), and an
+    unterminated last clause. `.ok ws` lists warnings, which do not reject: an
+    empty clause, and, when a header is present, a variable above `n` or a
+    clause count other than `m` (the first header counts; `parseDimacs`
+    ignores the counts). -/
 def checkDimacsText (path s : String) : Except String (List String) := Id.run do
   let mut lineNo : Nat := 0
   let mut lastTok : Option Int := none

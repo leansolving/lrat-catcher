@@ -174,8 +174,8 @@ theorem runChunk_more_sound {s s' : State} {chunk : Array IntAction} {idx : Nat}
 
 /-- drat-trim's forward-mode LRAT (needed for *derivations*, e.g. symmetry-breaking clause batches) writes additions that introduce a
     fresh definition variable as RAT steps with ZERO resolution candidates
-    and hence an EMPTY hint list. The core parser routes every hint-less
-    addition to `addRup`, whose check fails on empty hints. Reroute such
+    and hence an EMPTY hint list. A hand-built `addRup` action with empty
+    hints and a nonempty clause fails the `addRup` check. Reroute such
     actions to `addRat` with the standard first-literal pivot (the same
     choice the core parser's `getPivot` makes for genuine RAT lines):
     `State.checkRat` with zero RAT groups still validates the addition (it

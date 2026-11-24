@@ -70,8 +70,9 @@ theorem sat_of_negClause_false {a : Nat → Bool} {c : Cube}
 
     WARNING for hand-written pipelines: the leaf DIMACS file handed to the
     solver must list the cube units BEFORE the base clauses, matching
-    `c.toCNF ++ base`. With the units appended last, every LRAT clause id is
-    off by `|c|`. The import cannot establish a false refutation, but it may
+    `c.toCNF ++ base`. With the units appended last, the positions of the
+    input clauses differ, so the hints of such a certificate do not match.
+    The import cannot establish a false refutation, but it may
     fail the check (a `false` verdict, not a descriptive error) or describe
     another valid deduction, and a script that only re-checks its own file
     with an external checker does not notice the mismatch. -/

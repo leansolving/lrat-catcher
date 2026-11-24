@@ -248,14 +248,15 @@ In both modes the trusted statement contains the DIMACS parser, the CNF, or
 both, so the theorem says exactly what the input files say.
 
 Certificate files are read at elaboration time and are not tracked as Lake
-build dependencies. After editing a `.cnf` or `.lrat`, make any content change
-to the importing `.lean` file (e.g. edit a comment), or compile it directly
-with `lake lean <file>`, which builds the imports and loads the precompiled
-library (`lake env lean <file>` also re-checks, but runs the project's code in
-the interpreter). `touch` is *not* sufficient: Lake decides
-up-to-dateness by content hash, and it also replays previously *failed*
-builds from cache — so nothing re-runs and a stale `.olean` (or a stale
-error) keeps the old contents.
+build dependencies, so after editing a `.cnf` or `.lrat`, `lake build`
+replays the cached `.olean` without reading the new file. To re-check and
+update the build, make any content change to the importing `.lean` file (e.g.
+edit a comment) and run `lake build`. `touch` is *not* sufficient: Lake
+decides up-to-dateness by content hash. `lake lean <file>` builds the imports
+and re-checks the file with the precompiled library loaded (`lake env lean
+<file>` also re-checks, but runs the project's code in the interpreter);
+neither writes an `.olean`, so a later `lake build` still replays the old
+result.
 
 ## Integrating into a Lake project
 
