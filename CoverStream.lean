@@ -109,6 +109,11 @@ def escLean (s : String) : String :=
     (s.replace "\\" "\\\\").replace "\"" "\\\""
   else s
 
+/-- Quote a string for POSIX shell text: single quotes, an embedded `'` as
+    `'\''`. Used for every path written into the generated scripts. -/
+def shq (s : String) : String :=
+  "'" ++ s.replace "'" "'\\''" ++ "'"
+
 /-- Render one cube as a `Cube` literal term, e.g. `[(3, true), (5, false)]`. -/
 def cubeLit (c : Cube) : String :=
   "[" ++ String.intercalate ", " (c.map (fun (v, b) => s!"({v}, {b})")) ++ "]"
@@ -517,7 +522,7 @@ def main (args : List String) : IO UInt32 := do
     let driverLines : List String :=
       ["#!/bin/bash",
        s!"# Stream {modPrefix} certificates from a zstd archive and build.",
-       "# Usage: bash " ++ dir ++ "/driver.sh ARCHIVE_DIR [WAVE_SIZE]   (run from package root)",
+       "# Usage: bash " ++ shq s!"{dir}/driver.sh" ++ " ARCHIVE_DIR [WAVE_SIZE]   (run from package root)",
        "#   ARCHIVE_DIR holds leaf<i>.lrat.zst and leaf<i>_<k>.lrat.zst",
        "#   WAVE_SIZE modules are fed + built together (default 4; keep small locally).",
        "set -u",
@@ -525,7 +530,7 @@ def main (args : List String) : IO UInt32 := do
        "ARCHIVE_DIR=\"${1:-}\"",
        "WAVE_SIZE=\"${2:-4}\"",
        "if [ -z \"$ARCHIVE_DIR\" ]; then echo \"usage: driver.sh ARCHIVE_DIR [WAVE_SIZE]\" 1>&2; exit 1; fi",
-       s!"MANIFEST=\"{dir}/streams.tsv\"",
+       s!"MANIFEST={shq s!"{dir}/streams.tsv"}",
        s!"MODPREFIX=\"{modPrefix}\"",
        "if [ ! -f \"$MANIFEST\" ]; then echo \"driver.sh: missing $MANIFEST\" 1>&2; exit 1; fi",
        "# Base has no streams; build it first so streaming modules never rebuild it mid-stream.",
@@ -565,7 +570,7 @@ def main (args : List String) : IO UInt32 := do
        "  i=$((i+WAVE_SIZE))",
        "done",
        "# final composition (Cover + Main); streaming oleans are cached, no streams needed",
-       s!"bash {dir}/build.sh"]
+       s!"bash {shq s!"{dir}/build.sh"}"]
     writeOut s!"{dir}/driver.sh" (String.intercalate "\n" driverLines ++ "\n")
 
     -- ============================ worker-live.sh ============================
@@ -591,8 +596,8 @@ def main (args : List String) : IO UInt32 := do
        "ulimit -s unlimited 2>/dev/null || true",
        "",
        "# ---- CONFIG (edit) ----",
-       s!"BASE=\"{escLean baseFile}\"          # base DIMACS (as passed to the generator)",
-       s!"CUBES=\"{escLean icnfFile}\"         # iCNF cube file ('a ... 0' lines)",
+       s!"BASE={shq baseFile}          # base DIMACS (as passed to the generator)",
+       s!"CUBES={shq icnfFile}         # iCNF cube file ('a ... 0' lines)",
        "SOLVER=\"cadical\"",
        "SOLVER_FLAGS=\"--lrat\"               # binary LRAT is fine (feed auto-detects)",
        "TIMEOUT_SOLVE=43200",
@@ -605,8 +610,8 @@ def main (args : List String) : IO UInt32 := do
        "",
        "J=\"${1:?usage: worker-live.sh <chunk-number>}\"",
        s!"MOD=\"{modPrefix}.Chunk$J\"",
-       s!"SRC=\"{dir}/Chunk$J.lean\"",
-       s!"MANIFEST=\"{dir}/streams.tsv\"",
+       s!"SRC={shq dir}\"/Chunk$J.lean\"",
+       s!"MANIFEST={shq s!"{dir}/streams.tsv"}",
        "export LEAN_NUM_THREADS=${LEAN_NUM_THREADS:-2}",
        "",
        "# scratch guard: a full scratch disk fails every solve with confusing rc",
@@ -643,7 +648,10 @@ def main (args : List String) : IO UInt32 := do
        "  if [ $rc -ne 20 ] || [ ! -s \"$SCRATCH/cert$i.lrat\" ]; then fail=99; break; fi",
        "  kill -0 $LEANPID 2>/dev/null || { fail=99; break; }",
        "  # feed the checker (blocks until consumed = backpressure), then drop the cert",
-       "  timeout \"$TIMEOUT_FEED\" cat \"$SCRATCH/cert$i.lrat\" > \"$f\" || { fail=99; break; }",
+       "  # the redirection runs inside the timed process: opening a FIFO blocks",
+       "  # until the reader opens it, which a redirection in this shell would do",
+       "  # before timeout starts",
+       "  timeout \"$TIMEOUT_FEED\" sh -c 'exec cat \"$1\" > \"$2\"' sh \"$SCRATCH/cert$i.lrat\" \"$f\" || { fail=99; break; }",
        "  rm -f \"$SCRATCH/cert$i.lrat\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/solve$i.log\"",
        "done",
        "",
