@@ -1,4 +1,3 @@
-import LRATCatcher.Basic
 import Std.Tactic.BVDecide.LRAT
 
 /-!
