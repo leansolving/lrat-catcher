@@ -37,15 +37,32 @@ namespace LRATCatcher
 
 /-- Clause conversion of the core checker (`check.convertClause`, a helper
     local to `check` there): DIMACS integers to 0-based literals, zeros
-    dropped. -/
+    dropped. Literals are added directly, without intermediate lists; the
+    result equals the core definition (`convertClause_eq`). -/
 def convertClause (clause : Array Int) : CNF.Clause Nat :=
-  .ofLiterals <| clause.toList.filterMap fun int =>
-    if int > 0 then
-      some (int.natAbs - 1, true)
-    else if int < 0 then
-      some (int.natAbs - 1, false)
-    else
-      none
+  clause.foldl (fun c int =>
+    if int > 0 then c.add (int.natAbs - 1) true
+    else if int < 0 then c.add (int.natAbs - 1) false
+    else c) .empty
+
+/-- `convertClause` agrees with the list-based definition of the core checker
+    (same literals in the same order). -/
+theorem convertClause_eq (clause : Array Int) :
+    convertClause clause = .ofLiterals (clause.toList.filterMap fun int =>
+      if int > 0 then
+        some (int.natAbs - 1, true)
+      else if int < 0 then
+        some (int.natAbs - 1, false)
+      else
+        none) := by
+  simp only [convertClause, CNF.Clause.ofLiterals, List.foldl_filterMap, ← Array.foldl_toList]
+  congr 1
+  funext c int
+  by_cases h1 : int > 0
+  · simp [h1]
+  · by_cases h2 : int < 0
+    · simp [h1, h2]
+    · simp [h1, h2]
 
 /-- Result of checking one action or one chunk: the updated clause database,
     or `refuted` if the empty clause was derived. -/
