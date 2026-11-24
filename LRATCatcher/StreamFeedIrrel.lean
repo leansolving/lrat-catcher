@@ -10,12 +10,11 @@ import LRATCatcher.StreamOracle
   with fuel `fuel` consults the feed only at indices in the window
   `[i, i + fuel)` — it reads block `i`, and recurses at `i + 1` with one unit
   of fuel less — so any two feeds that agree on that window produce literally
-  the same verdict. Consequently the `native_decide` axiom recorded for a
-  streamed theorem pins the oracle at finitely many indices, and the theorem
-  it certifies holds for every feed extending those blocks; nothing outside
-  the window can affect the outcome. The same holds for the compacting
-  variant `checkStreamC`, whose extra state transformation does not touch
-  the feed.
+  the same verdict. The lemmas prove that acceptance depends only on the
+  blocks below the fuel bound; no lemma certifies the block values that were
+  read. The same holds for the compacting variant `checkStreamC`, whose extra
+  state transformation does not touch the feed. The axiom check of these
+  lemmas is in `LRATCatcher/Tests/FeedIrrelTest.lean`.
 -/
 
 open Std.Sat Std.Tactic.BVDecide.LRAT
@@ -116,12 +115,5 @@ theorem checkStreamCnfC_true_of_agree (cnf : CNF Nat)
     (hacc : checkStreamCnfC cnf feed fuel k = true) :
     checkStreamCnfC cnf feed' fuel k = true :=
   (checkStreamCnfC_feed_agree cnf feed feed' fuel k h) ▸ hacc
-
-#print axioms checkStream_feed_agree
-#print axioms checkStreamCnf_feed_agree
-#print axioms checkStreamCnf_true_of_agree
-#print axioms checkStreamC_feed_agree
-#print axioms checkStreamCnfC_feed_agree
-#print axioms checkStreamCnfC_true_of_agree
 
 end LRATCatcher

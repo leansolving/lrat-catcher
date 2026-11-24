@@ -53,7 +53,7 @@ lake build LRATCatcher.Tests.ReflectTest     # one worked example
 ```sh
 for t in ReflectTest CoverTest KernelTest DecideTest LeafBench SchurTest RamseyTest \
          ValidateTest StreamTest StreamCmdTest TwoStreamTest PresolveTest \
-         StreamChainPadTest RatTest SnapshotEdgeTest FactorTest; do
+         StreamChainPadTest RatTest SnapshotEdgeTest FactorTest FeedIrrelTest; do
   lake build LRATCatcher.Tests.$t
 done
 scripts/stream_fifo.sh 3    # StreamOracleTest, certificate streamed through a FIFO
