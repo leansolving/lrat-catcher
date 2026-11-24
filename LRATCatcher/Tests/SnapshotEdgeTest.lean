@@ -60,7 +60,9 @@ example (rest : Snapshot) :
   simp only [restoreD, compactSnapshot, State.toCNF, List.tail_cons]
   congr 1
   apply Array.toList_inj.mp
-  simp [List.filterMap_map, List.map_filterMap, Function.comp_def, List.filterMap_filterMap]
+  simp only [id_eq, List.filterMap_cons_none, List.map_filterMap, List.map_toArray,
+    Option.map_map, Function.comp_def, Option.map_some, List.size_toArray,
+    List.filterMap_toArray', List.filterMap_filterMap, List.length_map, List.filterMap_map]
   congr 1
   funext o
   cases o <;> rfl

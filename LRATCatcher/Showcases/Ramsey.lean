@@ -97,12 +97,12 @@ theorem subsets_valid (n : Nat) : ∀ (s : Nat) (vs : List Nat),
   | zero =>
     intro s vs hvs
     match s with
-    | 0 => simp [subsets] at hvs; subst hvs; exact ⟨rfl, nofun, .nil⟩
+    | 0 => simp only [subsets, List.mem_cons, List.not_mem_nil, or_false] at hvs; subst hvs; exact ⟨rfl, nofun, .nil⟩
     | _ + 1 => simp [subsets] at hvs
   | succ n ih =>
     intro s vs hvs
     match s with
-    | 0 => simp [subsets] at hvs; subst hvs; exact ⟨rfl, nofun, .nil⟩
+    | 0 => simp only [subsets, List.mem_cons, List.not_mem_nil, or_false] at hvs; subst hvs; exact ⟨rfl, nofun, .nil⟩
     | s + 1 =>
       simp only [subsets, List.mem_append, List.mem_map] at hvs
       rcases hvs with ⟨tl, htl, rfl⟩ | hvs
