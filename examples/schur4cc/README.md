@@ -108,5 +108,5 @@ eight streams 25 s, the rest generation and elaboration.
   replayed without re-reading them; the script therefore removes the
   example's build products before step 8, and every run re-checks the
   streams. After re-solving a single leaf by hand, rebuild with
-  `lake env lean LRATCatcher/Examples/Schur4CC/Chunk1.lean` (`touch` does not
+  `lake lean LRATCatcher/Examples/Schur4CC/Chunk1.lean` (`touch` does not
   trigger a rebuild).

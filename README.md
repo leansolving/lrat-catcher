@@ -250,7 +250,9 @@ both, so the theorem says exactly what the input files say.
 Certificate files are read at elaboration time and are not tracked as Lake
 build dependencies. After editing a `.cnf` or `.lrat`, make any content change
 to the importing `.lean` file (e.g. edit a comment), or compile it directly
-with `lake env lean <file>`. `touch` is *not* sufficient: Lake decides
+with `lake lean <file>`, which builds the imports and loads the precompiled
+library (`lake env lean <file>` also re-checks, but runs the project's code in
+the interpreter). `touch` is *not* sufficient: Lake decides
 up-to-dateness by content hash, and it also replays previously *failed*
 builds from cache — so nothing re-runs and a stale `.olean` (or a stale
 error) keeps the old contents.
