@@ -38,11 +38,12 @@ def numEdgeVars (n : Nat) : Nat := n * (n - 1) / 2
     upper triangle). Injective on that domain (checked in the test file). -/
 def edgeVar (n i j : Nat) : Nat := i * (2 * n - i - 1) / 2 + (j - i - 1)
 
-/-- All s-element subsets of `{0,…,n-1}`, as strictly decreasing lists. -/
+/-- All s-element subsets of `{0,…,n-1}`, as strictly decreasing lists
+    (none when `s > n`). -/
 def subsets : Nat → Nat → List (List Nat)
   | _, 0 => [[]]
   | 0, _ + 1 => []
-  | n + 1, s + 1 => (subsets n s).map (n :: ·) ++ subsets n (s + 1)
+  | n + 1, s + 1 => if n < s then [] else (subsets n s).map (n :: ·) ++ subsets n (s + 1)
 
 /-- Edge variables of the clique on vertex list `vs`. -/
 def cliqueEdgeVars (n : Nat) (vs : List Nat) : List Nat :=
@@ -104,7 +105,10 @@ theorem subsets_valid (n : Nat) : ∀ (s : Nat) (vs : List Nat),
     match s with
     | 0 => simp only [subsets, List.mem_cons, List.not_mem_nil, or_false] at hvs; subst hvs; exact ⟨rfl, nofun, .nil⟩
     | s + 1 =>
-      simp only [subsets, List.mem_append, List.mem_map] at hvs
+      simp only [subsets] at hvs
+      split at hvs
+      · exact absurd hvs List.not_mem_nil
+      simp only [List.mem_append, List.mem_map] at hvs
       rcases hvs with ⟨tl, htl, rfl⟩ | hvs
       · obtain ⟨hlen, hbound, hnodup⟩ := ih s tl htl
         refine ⟨by simp [hlen], ?_, ?_⟩
@@ -220,6 +224,11 @@ theorem subsets_complete (n : Nat) : ∀ (s : Nat) (vs : List Nat),
       subst hnil
       exact ⟨[], by simp [subsets], by simp⟩
     | s + 1 =>
+      have hsn : ¬ n < s := by
+        have := hnd.length_le_of_subset (l₂ := List.range (n + 1))
+          (fun v hv => List.mem_range.mpr (hb v hv))
+        rw [hlen, List.length_range] at this
+        omega
       rcases Classical.em (n ∈ vs) with hn | hn
       · -- `n` occurs: recurse on `vs.erase n`, prepend `n`.
         have hb' : ∀ v ∈ vs.erase n, v < n := by
@@ -231,7 +240,7 @@ theorem subsets_complete (n : Nat) : ∀ (s : Nat) (vs : List Nat),
           rw [List.length_erase_of_mem hn, hlen]; omega
         obtain ⟨ws, hws, hiff⟩ := ih s (vs.erase n) (hnd.erase n) hb' hlen'
         refine ⟨n :: ws, ?_, ?_⟩
-        · simp only [subsets, List.mem_append, List.mem_map]
+        · simp only [subsets, hsn, ite_false, List.mem_append, List.mem_map]
           exact Or.inl ⟨ws, hws, rfl⟩
         · intro x
           simp only [List.mem_cons, hiff x, hnd.mem_erase_iff]
@@ -252,7 +261,7 @@ theorem subsets_complete (n : Nat) : ∀ (s : Nat) (vs : List Nat),
           · have := hb v hv; omega
         obtain ⟨ws, hws, hiff⟩ := ih (s + 1) vs hnd hb' hlen
         refine ⟨ws, ?_, hiff⟩
-        simp only [subsets, List.mem_append]
+        simp only [subsets, hsn, ite_false, List.mem_append]
         exact Or.inr hws
 
 /-- Boolean check that `f` has no red `K_s` and no blue `K_t` on `K_n`. -/
