@@ -285,11 +285,18 @@ unsafe def certFeedImpl : Nat → Option (Array IntAction) := fun i =>
           | .error it _ =>
             if it.idx < buf.size || eof then
               break
-            let chunk ← h.read 1048576
-            if chunk.size == 0 then
-              eof := true
-            else
+            -- partial action: read until its pending bytes have at least
+            -- doubled (or EOF) before parsing it again from its start, so
+            -- the reparse work for a long action stays linear in its size
+            let goal := 2 * (buf.size - pos)
+            repeat
+              let chunk ← h.read 1048576
+              if chunk.size == 0 then
+                eof := true
+                break
               buf := buf ++ chunk
+              if buf.size - pos ≥ goal then
+                break
         else
           if eof then
             break
