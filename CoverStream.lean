@@ -57,6 +57,15 @@ even when every individual task fits. The worker follows the generator options: 
 `lratcatch-compact-renumber` (the same `KC`, block size `LRATCATCHER_STREAM_BLOCK` or
 4096, which it exports to the checker).
 
+Both scripts check a streaming module with `lake build`, so Lake records its trace
+(the hash of the module's inputs) only after every certificate of the module was
+accepted, and `build.sh` composes only modules whose trace matches; it stops if a
+streaming module is not built rather than rebuild it without streams. Trade-off:
+the certificates are not inputs of that trace, so a built module is not checked again
+when its certificates change (its statement does not depend on them), and a worker
+for a module Lake already accepts exits at once; concurrent workers share one
+package directory and write only their own module's build files.
+
 Usage:
   lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt \
     subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel]
@@ -503,14 +512,25 @@ def main (args : List String) : IO UInt32 := do
     let buildLines : List String :=
       ["#!/bin/bash",
        s!"# Build {modPrefix}.Main, retrying transient per-module build failures.",
-       "# Run from the package root, AFTER driver.sh has built the streaming modules",
-       "# (this final pass composes them + the cover; no streams needed here).",
+       "# Run from the package root, AFTER driver.sh or worker-live.sh has built",
+       "# every streaming module (this final pass composes them + the cover; no",
+       "# streams needed here).",
        "set -u",
        "# wide generated compositions can overflow the OS thread stack during",
        "# elaboration (exit 134); an unlimited stack is the first remedy",
        "ulimit -s unlimited 2>/dev/null || true",
        s!"TARGET=\"{modPrefix}.Main\"",
+       s!"MANIFEST={shq s!"{dir}/streams.tsv"}",
+       s!"MODPREFIX=\"{modPrefix}\"",
        "ATTEMPTS=\"${1:-}\"; [ -z \"$ATTEMPTS\" ] && ATTEMPTS=3",
+       "if [ ! -f \"$MANIFEST\" ]; then echo \"build.sh: missing $MANIFEST\" 1>&2; exit 1; fi",
+       "# a streaming module Lake does not accept as built would be rebuilt here",
+       "# without its streams (it fails, or blocks on a leftover FIFO): stop instead",
+       "STREAMED=()",
+       "while IFS= read -r m; do STREAMED+=(\"$MODPREFIX.$m:olean\"); done < <(cut -f1 \"$MANIFEST\" | awk '!seen[$0]++')",
+       "if ! lake build --no-build \"${STREAMED[@]}\"; then",
+       "  echo \"build.sh: the streaming modules listed above are not built; run driver.sh or worker-live.sh for them\" 1>&2; exit 1",
+       "fi",
        "i=1",
        "while [ \"$i\" -le \"$ATTEMPTS\" ]; do",
        "  if lake build \"$TARGET:olean\"; then echo \"build.sh: $TARGET OK (attempt $i)\"; exit 0; fi",
@@ -655,10 +675,13 @@ def main (args : List String) : IO UInt32 := do
        "",
        "J=\"${1:?usage: worker-live.sh <chunk-number>}\"",
        s!"MOD=\"{modPrefix}.Chunk$J\"",
-       s!"SRC={shq dir}\"/Chunk$J.lean\"",
        s!"MANIFEST={shq s!"{dir}/streams.tsv"}",
        "export LEAN_NUM_THREADS=${LEAN_NUM_THREADS:-2}"] ++ compactSetup ++
       ["",
+       "# a chunk Lake already accepts is done: lake build would not open its",
+       "# FIFOs, and the feeds would block until TIMEOUT_FEED",
+       "if lake build --no-build \"$MOD:olean\" > /dev/null 2>&1; then echo \"Chunk$J is already built\"; exit 0; fi",
+       "",
        "# scratch guard: a full scratch disk fails every solve with confusing rc",
        "FREE_G=$(df -P \"$SCRATCH\" | awk 'NR==2{print int($4/1048576)}')",
        "if [ \"${FREE_G:-0}\" -lt \"$MIN_FREE_G\" ]; then echo \"low scratch (${FREE_G}G) — requeue\" 1>&2; exit 99; fi",
@@ -674,9 +697,11 @@ def main (args : List String) : IO UInt32 := do
        "killtree () { local c; for c in $(pgrep -P \"$1\"); do killtree \"$c\"; done; kill \"$1\" 2>/dev/null; }",
        "",
        "# start the checker FIRST — it blocks reading the first FIFO.",
-       "# lake lean, not raw lean -R: only lake loads the library's precompiled",
-       "# dynlibs; a raw lean invocation runs project code in the IR interpreter.",
-       "( lake lean \"$SRC\" -- -o \"$SCRATCH/Chunk$J.olean\" > \"$SCRATCH/lean$J.out\" 2>&1; echo $? > \"$SCRATCH/lean$J.rc\" ) &",
+       "# lake build, as in driver.sh: Lake writes the module's trace next to its",
+       "# olean only after a successful check, and a later lake build (build.sh)",
+       "# accepts the module by that trace instead of rebuilding it without streams.",
+       "rm -f \"$SCRATCH/lean$J.rc\"",
+       "( lake build \"$MOD:olean\" > \"$SCRATCH/lean$J.out\" 2>&1; echo $? > \"$SCRATCH/lean$J.rc\" ) &",
        "LEANPID=$!",
        "",
        "# leaf indices of this chunk: FIFO basenames are leaf<i>",
@@ -703,15 +728,9 @@ def main (args : List String) : IO UInt32 := do
        "wait $LEANPID 2>/dev/null",
        "rc=$(cat \"$SCRATCH/lean$J.rc\" 2>/dev/null || echo 900)",
        "cleanup",
-       "if [ \"$rc\" = \"0\" ] && [ -s \"$SCRATCH/Chunk$J.olean\" ]; then",
-       "  DEST=\"$TOOLROOT/.lake/build/lib/lean/$(echo \"" ++ modPrefix ++ "\" | tr '.' '/')\"",
-       "  mkdir -p \"$DEST\"",
-       "  cp \"$SCRATCH/Chunk$J.olean\" \"$DEST/.C$J.$$\" && mv \"$DEST/.C$J.$$\" \"$DEST/Chunk$J.olean\"",
-       "  exit 0",
-       "else",
-       "  head -30 \"$SCRATCH/lean$J.out\" 1>&2",
-       "  exit 2",
-       "fi"]
+       "if [ \"$rc\" = \"0\" ]; then exit 0; fi",
+       "tail -30 \"$SCRATCH/lean$J.out\" 1>&2",
+       "exit 2"]
     writeOut s!"{dir}/worker-live.sh" (String.intercalate "\n" workerLines ++ "\n")
 
   match part with
