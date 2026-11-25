@@ -641,13 +641,20 @@ def main (args : List String) : IO UInt32 := do
         ["  # leaf CNF: cube units FIRST, then base clauses (leafCNF c base =",
          "  # c.toCNF ++ base; LRAT ids are positional)"] ++ common ++
         ["  { echo \"p cnf $NV $((NC+NL))\"; for l in $LITS; do echo \"$l 0\"; done; grep -v '^p cnf' \"$BASE\"; } > \"$SCRATCH/leaf$i.cnf\""]
+    let feedWait : List String :=
+      ["  FEEDPID=$!",
+       "  # a checker that dies before opening the FIFO leaves the feed blocked in",
+       "  # open: end the feed as soon as the checker is gone",
+       "  while kill -0 $FEEDPID 2>/dev/null; do kill -0 $LEANPID 2>/dev/null || { kill $FEEDPID 2>/dev/null; break; }; sleep 1; done",
+       "  wait $FEEDPID; frc=$?",
+       "  [ $frc -eq 0 ] || { [ $frc -eq 124 ] && fail=99 || fail=5; break; }"]
     let feedLines : List String := match compactK with
       | some _ =>
         ["  case \"$(head -c 1 \"$SCRATCH/cert$i.lrat\")\" in [0-9]) ;; *) echo \"cert$i is not ASCII LRAT (keep --no-binary in SOLVER_FLAGS)\" 1>&2; fail=1; break ;; esac",
          "  # renumbered on the way into the FIFO (the renumbering tool reads the file)",
-         "  timeout \"$TIMEOUT_FEED\" sh -c 'exec \"$1\" \"$2\" \"$3\" - \"$4\" --block \"$5\" > \"$6\"' sh \"$RENUMBER\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" \"$COMPACT_K\" \"$BLOCK\" \"$f\" || { [ $? -eq 124 ] && fail=99 || fail=5; break; }"]
+         "  timeout \"$TIMEOUT_FEED\" sh -c 'exec \"$1\" \"$2\" \"$3\" - \"$4\" --block \"$5\" > \"$6\"' sh \"$RENUMBER\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" \"$COMPACT_K\" \"$BLOCK\" \"$f\" &"] ++ feedWait
       | none =>
-        ["  timeout \"$TIMEOUT_FEED\" sh -c 'exec cat \"$1\" > \"$2\"' sh \"$SCRATCH/cert$i.lrat\" \"$f\" || { [ $? -eq 124 ] && fail=99 || fail=5; break; }"]
+        ["  timeout \"$TIMEOUT_FEED\" sh -c 'exec cat \"$1\" > \"$2\"' sh \"$SCRATCH/cert$i.lrat\" \"$f\" &"] ++ feedWait
     let workerLines : List String :=
       ["#!/bin/bash",
        s!"# Pipelined live-solve worker TEMPLATE for {modPrefix} chunk modules.",
