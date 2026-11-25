@@ -55,7 +55,10 @@ even when every individual task fits. The worker follows the generator options: 
 `--units-last` it writes the leaf CNF with the base clauses first, and with
 `--compact KC` it has the solver write ASCII LRAT and feeds each certificate through
 `lratcatch-compact-renumber` (the same `KC`, block size `LRATCATCHER_STREAM_BLOCK` or
-4096, which it exports to the checker).
+4096, which it exports to the checker). Its exit codes separate deterministic failures
+(2: a certificate was rejected or the module did not elaborate; 3: a satisfiable leaf)
+from transient ones that a job farm should requeue (99: solver or feed timeout, low
+scratch, a checker killed by a signal).
 
 Both scripts check a streaming module with `lake build`, so Lake records its trace
 (the hash of the module's inputs) only after every certificate of the module was
@@ -642,9 +645,9 @@ def main (args : List String) : IO UInt32 := do
       | some _ =>
         ["  case \"$(head -c 1 \"$SCRATCH/cert$i.lrat\")\" in [0-9]) ;; *) echo \"cert$i is not ASCII LRAT (keep --no-binary in SOLVER_FLAGS)\" 1>&2; fail=1; break ;; esac",
          "  # renumbered on the way into the FIFO (the renumbering tool reads the file)",
-         "  timeout \"$TIMEOUT_FEED\" sh -c 'exec \"$1\" \"$2\" \"$3\" - \"$4\" --block \"$5\" > \"$6\"' sh \"$RENUMBER\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" \"$COMPACT_K\" \"$BLOCK\" \"$f\" || { fail=99; break; }"]
+         "  timeout \"$TIMEOUT_FEED\" sh -c 'exec \"$1\" \"$2\" \"$3\" - \"$4\" --block \"$5\" > \"$6\"' sh \"$RENUMBER\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" \"$COMPACT_K\" \"$BLOCK\" \"$f\" || { [ $? -eq 124 ] && fail=99 || fail=5; break; }"]
       | none =>
-        ["  timeout \"$TIMEOUT_FEED\" sh -c 'exec cat \"$1\" > \"$2\"' sh \"$SCRATCH/cert$i.lrat\" \"$f\" || { fail=99; break; }"]
+        ["  timeout \"$TIMEOUT_FEED\" sh -c 'exec cat \"$1\" > \"$2\"' sh \"$SCRATCH/cert$i.lrat\" \"$f\" || { [ $? -eq 124 ] && fail=99 || fail=5; break; }"]
     let workerLines : List String :=
       ["#!/bin/bash",
        s!"# Pipelined live-solve worker TEMPLATE for {modPrefix} chunk modules.",
@@ -652,11 +655,13 @@ def main (args : List String) : IO UInt32 := do
        "# build the Base module first: lake build " ++ modPrefix ++ ".Base",
        "# — one build up front also avoids concurrent workers racing to build",
        "# shared dependencies).",
-       "# EDIT the CONFIG block before use. Exit codes: 0 ok, 1 usage or",
-       "# configuration error (do not requeue), 2 check failed,",
-       "# 3 a leaf was SAT (falsifies the cover — investigate!), 99 requeue",
-       "# (infrastructure: low disk, solver crash, timeout; SGE requeues on",
-       "# 'qsub -r y' when the script exits 99).",
+       "# EDIT the CONFIG block before use. Exit codes: 0 ok (also when Lake",
+       "# already accepts the chunk), 1 usage or configuration error (do not",
+       "# requeue), 2 check failed: a certificate was rejected or the module did",
+       "# not elaborate (deterministic, do not requeue), 3 a leaf was SAT",
+       "# (falsifies the cover — investigate!), 99 requeue (infrastructure: low",
+       "# disk, solver crash or timeout, feed timeout, checker killed by a signal;",
+       "# SGE requeues on 'qsub -r y' when the script exits 99).",
        "set -u",
        "ulimit -s unlimited 2>/dev/null || true",
        "",
@@ -695,6 +700,10 @@ def main (args : List String) : IO UInt32 := do
        "# stop the checker with its children (lake, lean): killing the subshell",
        "# alone leaves lean running, blocked on a FIFO",
        "killtree () { local c; for c in $(pgrep -P \"$1\"); do killtree \"$c\"; done; kill \"$1\" 2>/dev/null; }",
+       "# verdict on a checker that exited non-zero by itself: killed by a signal",
+       "# (OOM killer, scheduler: Lake reports code 137 or 143) is transient (99);",
+       "# otherwise a certificate was rejected or the module did not elaborate (2)",
+       "checker_failed () { if [ ! -s \"$SCRATCH/lean$J.rc\" ] || grep -q -E 'Lean exited with code (137|143)' \"$SCRATCH/lean$J.out\"; then return 99; fi; return 2; }",
        "",
        "# start the checker FIRST — it blocks reading the first FIFO.",
        "# lake build, as in driver.sh: Lake writes the module's trace next to its",
@@ -712,7 +721,7 @@ def main (args : List String) : IO UInt32 := do
        "  rc=$?",
        "  if [ $rc -eq 10 ]; then fail=3; break; fi",
        "  if [ $rc -ne 20 ] || [ ! -s \"$SCRATCH/cert$i.lrat\" ]; then fail=99; break; fi",
-       "  kill -0 $LEANPID 2>/dev/null || { fail=99; break; }",
+       "  kill -0 $LEANPID 2>/dev/null || { fail=5; break; }",
        "  # feed the checker (blocks until consumed = backpressure), then drop the cert",
        "  # the redirection runs inside the timed process: opening a FIFO blocks",
        "  # until the reader opens it, which a redirection in this shell would do",
@@ -720,8 +729,19 @@ def main (args : List String) : IO UInt32 := do
       ["  rm -f \"$SCRATCH/cert$i.lrat\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/solve$i.log\"",
        "done",
        "",
+       "# fail=5: the checker stopped reading, or exited, before leaf $i was fed.",
+       "# It closes the stream of a certificate it rejects and goes on to the next",
+       "# leaf (blocking on its FIFO): still running after a grace period means",
+       "# rejected; exited means checker_failed decides.",
+       "if [ $fail -eq 5 ]; then",
+       "  sleep 2",
+       "  if kill -0 $LEANPID 2>/dev/null; then",
+       "    fail=2; echo \"leaf $i: the checker stopped reading its certificate (rejected), do NOT requeue\" 1>&2",
+       "  fi",
+       "fi",
        "if [ $fail -ne 0 ]; then",
        "  killtree $LEANPID; wait $LEANPID 2>/dev/null; cleanup",
+       "  if [ $fail -eq 5 ]; then tail -30 \"$SCRATCH/lean$J.out\" 1>&2; checker_failed; fail=$?; fi",
        "  [ $fail -eq 3 ] && echo \"leaf $i is SAT — the cover is falsified, do NOT requeue\" 1>&2",
        "  exit $fail",
        "fi",
@@ -730,7 +750,7 @@ def main (args : List String) : IO UInt32 := do
        "cleanup",
        "if [ \"$rc\" = \"0\" ]; then exit 0; fi",
        "tail -30 \"$SCRATCH/lean$J.out\" 1>&2",
-       "exit 2"]
+       "checker_failed; exit $?"]
     writeOut s!"{dir}/worker-live.sh" (String.intercalate "\n" workerLines ++ "\n")
 
   match part with
