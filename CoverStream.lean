@@ -51,7 +51,11 @@ chunk's leaves one at a time, feeding each certificate into its FIFO and deletin
 immediately — at most two certificates on scratch at any moment. Do NOT replace this
 with solve-everything-then-check glue: that multiplies per-task scratch by the chunk
 size, and a job farm at full node packing can exhaust node-local scratch cluster-wide
-even when every individual task fits.
+even when every individual task fits. The worker follows the generator options: with
+`--units-last` it writes the leaf CNF with the base clauses first, and with
+`--compact KC` it has the solver write ASCII LRAT and feeds each certificate through
+`lratcatch-compact-renumber` (the same `KC`, block size `LRATCATCHER_STREAM_BLOCK` or
+4096, which it exports to the checker).
 
 Usage:
   lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt \
@@ -192,7 +196,7 @@ def readSubCubes (subicnfDir : String) (i : Nat) : IO (Array Cube) := do
   return cs
 
 def main (args : List String) : IO UInt32 := do
-  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel] [--units-last] [--compact KC] [--base-term T] [--import M]... [--root R]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel\n  --units-last: leaf certs were solved from base-first DIMACS (cube units LAST); chunk statements stream (base ++ toCNF c) and transfer via unsat_append_comm\n  --compact KC: leaf checks compact their clause database every KC feed blocks (lrat_stream_cnf_compact); the archived certificates MUST be pre-renumbered with lratcatch-compact-renumber (same KC and block size)\n  --base-term T: Base.lean states `base := T` (a Lean CNF term, e.g. an encoder application) instead of parseDimacs of base.cnf, which must be its printout; --import M adds the imports T needs\n  --root R: module-name root of the emitted set (default LRATCatcher.Generated; directory R with dots as slashes)"
+  let usage := "usage: lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt subicnfdir negsubdir streamdir Name [K] [--part shared|LO:HI] [--rel] [--units-last] [--compact KC] [--base-term T] [--import M]... [--root R]\n  global module numbering: chunk modules 1..numChunks, then parent modules numChunks+1..\n  --rel: the top cover cert refutes base ++ negcubes (relative cover); composes via cover_unsat_rel\n  --units-last: leaf certs were solved from base-first DIMACS (cube units LAST); chunk statements stream (base ++ toCNF c) and transfer via unsat_append_comm\n  --compact KC: leaf checks compact their clause database every KC feed blocks (lrat_stream_cnf_compact); the archived certificates MUST be pre-renumbered with lratcatch-compact-renumber (same KC and block size); worker-live.sh renumbers while it feeds\n  --base-term T: Base.lean states `base := T` (a Lean CNF term, e.g. an encoder application) instead of parseDimacs of base.cnf, which must be its printout; --import M adds the imports T needs\n  --root R: module-name root of the emitted set (default LRATCatcher.Generated; directory R with dots as slashes)"
   let relMode := args.contains "--rel"
   let args := args.filter (· != "--rel")
   let unitsLast := args.contains "--units-last"
@@ -581,6 +585,46 @@ def main (args : List String) : IO UInt32 := do
     -- (solve everything, then check) multiplies per-task scratch by the chunk
     -- size, and a farm at full node packing can exhaust node-local scratch
     -- cluster-wide even though every single task fits comfortably.
+    -- The generator options fix the leaf CNF order (--units-last) and the feed
+    -- (--compact: ASCII certificate, renumbered while it is fed).
+    let solverFlagsLine := match compactK with
+      | some _ => "SOLVER_FLAGS=\"--lrat --no-binary\"   # ASCII LRAT: the renumbering tool reads ASCII only"
+      | none => "SOLVER_FLAGS=\"--lrat\"               # binary LRAT is fine (feed auto-detects)"
+    let compactSetup : List String := match compactK with
+      | some kc =>
+        ["",
+         s!"# --compact {kc}: the modules compact their clause database every {kc} feed blocks;",
+         "# each certificate is renumbered to the compacted positions while it is fed,",
+         "# with the same K and block size. The checker reads LRATCATCHER_STREAM_BLOCK",
+         "# (default 4096); the normalized value is exported so both sides use it.",
+         s!"COMPACT_K={kc}",
+         "RENUMBER=\"$TOOLROOT/.lake/build/bin/lratcatch-compact-renumber\"",
+         "BLOCK=\"${LRATCATCHER_STREAM_BLOCK:-4096}\"",
+         "case \"$BLOCK\" in ''|*[!0-9]*) BLOCK=4096 ;; esac",
+         "[ \"$BLOCK\" -gt 0 ] || BLOCK=4096",
+         "export LRATCATCHER_STREAM_BLOCK=\"$BLOCK\"",
+         "[ -x \"$RENUMBER\" ] || { echo \"missing $RENUMBER (lake build lratcatch-compact-renumber)\" 1>&2; exit 1; }"]
+      | none => []
+    let leafCnfLines : List String :=
+      let common :=
+        ["  LITS=$(awk -v n=\"$i\" '/^a /{c++; if (c==n) {sub(/^a /,\"\"); sub(/ 0$/,\"\"); print; exit}}' \"$CUBES\")",
+         "  NL=$(echo \"$LITS\" | wc -w)",
+         "  read -r NV NC < <(awk '/^p cnf/{print $3, $4; exit}' \"$BASE\")"]
+      if unitsLast then
+        ["  # leaf CNF (--units-last): base clauses FIRST, then the cube units, as in",
+         "  # the chunk statements (base ++ toCNF c; LRAT ids are positional)"] ++ common ++
+        ["  { echo \"p cnf $NV $((NC+NL))\"; grep -v '^p cnf' \"$BASE\"; for l in $LITS; do echo \"$l 0\"; done; } > \"$SCRATCH/leaf$i.cnf\""]
+      else
+        ["  # leaf CNF: cube units FIRST, then base clauses (leafCNF c base =",
+         "  # c.toCNF ++ base; LRAT ids are positional)"] ++ common ++
+        ["  { echo \"p cnf $NV $((NC+NL))\"; for l in $LITS; do echo \"$l 0\"; done; grep -v '^p cnf' \"$BASE\"; } > \"$SCRATCH/leaf$i.cnf\""]
+    let feedLines : List String := match compactK with
+      | some _ =>
+        ["  case \"$(head -c 1 \"$SCRATCH/cert$i.lrat\")\" in [0-9]) ;; *) echo \"cert$i is not ASCII LRAT (keep --no-binary in SOLVER_FLAGS)\" 1>&2; fail=1; break ;; esac",
+         "  # renumbered on the way into the FIFO (the renumbering tool reads the file)",
+         "  timeout \"$TIMEOUT_FEED\" sh -c 'exec \"$1\" \"$2\" \"$3\" - \"$4\" --block \"$5\" > \"$6\"' sh \"$RENUMBER\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" \"$COMPACT_K\" \"$BLOCK\" \"$f\" || { fail=99; break; }"]
+      | none =>
+        ["  timeout \"$TIMEOUT_FEED\" sh -c 'exec cat \"$1\" > \"$2\"' sh \"$SCRATCH/cert$i.lrat\" \"$f\" || { fail=99; break; }"]
     let workerLines : List String :=
       ["#!/bin/bash",
        s!"# Pipelined live-solve worker TEMPLATE for {modPrefix} chunk modules.",
@@ -588,7 +632,8 @@ def main (args : List String) : IO UInt32 := do
        "# build the Base module first: lake build " ++ modPrefix ++ ".Base",
        "# — one build up front also avoids concurrent workers racing to build",
        "# shared dependencies).",
-       "# EDIT the CONFIG block before use. Exit codes: 0 ok, 2 check failed,",
+       "# EDIT the CONFIG block before use. Exit codes: 0 ok, 1 usage or",
+       "# configuration error (do not requeue), 2 check failed,",
        "# 3 a leaf was SAT (falsifies the cover — investigate!), 99 requeue",
        "# (infrastructure: low disk, solver crash, timeout; SGE requeues on",
        "# 'qsub -r y' when the script exits 99).",
@@ -599,7 +644,7 @@ def main (args : List String) : IO UInt32 := do
        s!"BASE={shq baseFile}          # base DIMACS (as passed to the generator)",
        s!"CUBES={shq icnfFile}         # iCNF cube file ('a ... 0' lines)",
        "SOLVER=\"cadical\"",
-       "SOLVER_FLAGS=\"--lrat\"               # binary LRAT is fine (feed auto-detects)",
+       solverFlagsLine,
        "TIMEOUT_SOLVE=43200",
        "TIMEOUT_FEED=7200",
        "MIN_FREE_G=8                        # requeue if scratch has less than this",
@@ -612,8 +657,8 @@ def main (args : List String) : IO UInt32 := do
        s!"MOD=\"{modPrefix}.Chunk$J\"",
        s!"SRC={shq dir}\"/Chunk$J.lean\"",
        s!"MANIFEST={shq s!"{dir}/streams.tsv"}",
-       "export LEAN_NUM_THREADS=${LEAN_NUM_THREADS:-2}",
-       "",
+       "export LEAN_NUM_THREADS=${LEAN_NUM_THREADS:-2}"] ++ compactSetup ++
+      ["",
        "# scratch guard: a full scratch disk fails every solve with confusing rc",
        "FREE_G=$(df -P \"$SCRATCH\" | awk 'NR==2{print int($4/1048576)}')",
        "if [ \"${FREE_G:-0}\" -lt \"$MIN_FREE_G\" ]; then echo \"low scratch (${FREE_G}G) — requeue\" 1>&2; exit 99; fi",
@@ -624,6 +669,9 @@ def main (args : List String) : IO UInt32 := do
        "[ \"${#FIFOS[@]}\" -gt 0 ] || { echo \"no streams for Chunk$J in $MANIFEST\" 1>&2; exit 99; }",
        "for f in \"${FIFOS[@]}\"; do mkdir -p \"$(dirname \"$f\")\"; rm -f \"$f\"; mkfifo \"$f\"; done",
        "cleanup () { for f in \"${FIFOS[@]}\"; do rm -f \"$f\"; done; }",
+       "# stop the checker with its children (lake, lean): killing the subshell",
+       "# alone leaves lean running, blocked on a FIFO",
+       "killtree () { local c; for c in $(pgrep -P \"$1\"); do killtree \"$c\"; done; kill \"$1\" 2>/dev/null; }",
        "",
        "# start the checker FIRST — it blocks reading the first FIFO.",
        "# lake lean, not raw lean -R: only lake loads the library's precompiled",
@@ -634,15 +682,8 @@ def main (args : List String) : IO UInt32 := do
        "# leaf indices of this chunk: FIFO basenames are leaf<i>",
        "fail=0",
        "for f in \"${FIFOS[@]}\"; do",
-       "  i=$(basename \"$f\" | sed 's/[^0-9]*//')",
-       "  # leaf CNF: cube units FIRST, then base clauses (leafCNF c base =",
-       "  # c.toCNF ++ base; LRAT ids are positional). With --units-last",
-       "  # generation, put the base clauses first and the units last instead.",
-       "  LITS=$(awk -v n=\"$i\" '/^a /{c++; if (c==n) {sub(/^a /,\"\"); sub(/ 0$/,\"\"); print; exit}}' \"$CUBES\")",
-       "  NL=$(echo \"$LITS\" | wc -w)",
-       "  read -r NV NC < <(awk '/^p cnf/{print $3, $4; exit}' \"$BASE\")",
-       "  { echo \"p cnf $NV $((NC+NL))\"; for l in $LITS; do echo \"$l 0\"; done; grep -v '^p cnf' \"$BASE\"; } > \"$SCRATCH/leaf$i.cnf\"",
-       "  timeout \"$TIMEOUT_SOLVE\" $SOLVER $SOLVER_FLAGS \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" > \"$SCRATCH/solve$i.log\" 2>&1",
+       "  i=$(basename \"$f\" | sed 's/[^0-9]*//')"] ++ leafCnfLines ++
+      ["  timeout \"$TIMEOUT_SOLVE\" $SOLVER $SOLVER_FLAGS \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/cert$i.lrat\" > \"$SCRATCH/solve$i.log\" 2>&1",
        "  rc=$?",
        "  if [ $rc -eq 10 ]; then fail=3; break; fi",
        "  if [ $rc -ne 20 ] || [ ! -s \"$SCRATCH/cert$i.lrat\" ]; then fail=99; break; fi",
@@ -650,13 +691,12 @@ def main (args : List String) : IO UInt32 := do
        "  # feed the checker (blocks until consumed = backpressure), then drop the cert",
        "  # the redirection runs inside the timed process: opening a FIFO blocks",
        "  # until the reader opens it, which a redirection in this shell would do",
-       "  # before timeout starts",
-       "  timeout \"$TIMEOUT_FEED\" sh -c 'exec cat \"$1\" > \"$2\"' sh \"$SCRATCH/cert$i.lrat\" \"$f\" || { fail=99; break; }",
-       "  rm -f \"$SCRATCH/cert$i.lrat\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/solve$i.log\"",
+       "  # before timeout starts"] ++ feedLines ++
+      ["  rm -f \"$SCRATCH/cert$i.lrat\" \"$SCRATCH/leaf$i.cnf\" \"$SCRATCH/solve$i.log\"",
        "done",
        "",
        "if [ $fail -ne 0 ]; then",
-       "  kill $LEANPID 2>/dev/null; wait $LEANPID 2>/dev/null; cleanup",
+       "  killtree $LEANPID; wait $LEANPID 2>/dev/null; cleanup",
        "  [ $fail -eq 3 ] && echo \"leaf $i is SAT — the cover is falsified, do NOT requeue\" 1>&2",
        "  exit $fail",
        "fi",
@@ -681,5 +721,5 @@ def main (args : List String) : IO UInt32 := do
     IO.println s!"lratcatch-cover-stream: {n} top cubes ({numParents} re-cubed), {numChunks} chunk(s) + {numParents} parent(s) = {totalMods} module(s) in {dir}/"
     IO.println s!"  stream + build: bash {dir}/driver.sh ARCHIVE_DIR [WAVE_SIZE]   # from package root"
     if let some kc := compactK then
-      IO.println s!"  --compact {kc}: archive certificates MUST be pre-renumbered (lratcatch-compact-renumber base K={kc}, matching block size)"
+      IO.println s!"  --compact {kc}: archive certificates MUST be pre-renumbered (lratcatch-compact-renumber base K={kc}, matching block size); worker-live.sh renumbers while it feeds (needs lake build lratcatch-compact-renumber)"
   return (0 : UInt32)
