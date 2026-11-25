@@ -66,8 +66,10 @@ accepted, and `build.sh` composes only modules whose trace matches; it stops if 
 streaming module is not built rather than rebuild it without streams. Trade-off:
 the certificates are not inputs of that trace, so a built module is not checked again
 when its certificates change (its statement does not depend on them), and a worker
-for a module Lake already accepts exits at once; concurrent workers share one
-package directory and write only their own module's build files.
+for a module Lake already accepts exits at once. Concurrent workers share one
+package directory: the imports of the chunk modules must be built before they start
+(`lake build <root>.Chunk1:deps`), since several Lake processes building the same
+shared module race on its files; the worker refuses to start otherwise.
 
 Usage:
   lratcatch-cover-stream base.cnf cubes.icnf cover.lrat recubed.txt \
@@ -659,9 +661,9 @@ def main (args : List String) : IO UInt32 := do
       ["#!/bin/bash",
        s!"# Pipelined live-solve worker TEMPLATE for {modPrefix} chunk modules.",
        "# Usage: worker-live.sh <chunk-number>   (run from the package root;",
-       "# build the Base module first: lake build " ++ modPrefix ++ ".Base",
-       "# — one build up front also avoids concurrent workers racing to build",
-       "# shared dependencies).",
+       "# build the imports of the chunk modules first, once, before any worker:",
+       "# lake build " ++ modPrefix ++ ".Chunk1:deps",
+       "# — concurrent workers building the same shared module race on its files).",
        "# EDIT the CONFIG block before use. Exit codes: 0 ok (also when Lake",
        "# already accepts the chunk), 1 usage or configuration error (do not",
        "# requeue), 2 check failed: a certificate was rejected or the module did",
@@ -693,6 +695,10 @@ def main (args : List String) : IO UInt32 := do
        "# a chunk Lake already accepts is done: lake build would not open its",
        "# FIFOs, and the feeds would block until TIMEOUT_FEED",
        "if lake build --no-build \"$MOD:olean\" > /dev/null 2>&1; then echo \"Chunk$J is already built\"; exit 0; fi",
+       "# the imports must be built before the workers start (see Usage)",
+       "if ! lake build --no-build \"$MOD:deps\" > /dev/null 2>&1; then",
+       "  echo \"imports of $MOD are not built; run once before the workers: lake build $MOD:deps\" 1>&2; exit 1",
+       "fi",
        "",
        "# scratch guard: a full scratch disk fails every solve with confusing rc",
        "FREE_G=$(df -P \"$SCRATCH\" | awk 'NR==2{print int($4/1048576)}')",
